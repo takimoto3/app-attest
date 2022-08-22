@@ -36,12 +36,6 @@ type AssertionService struct {
 	Counter   uint32
 }
 
-type AssertionParams struct {
-	AssertionObject *AssertionObject
-	Challenge       string
-	ClientData      []byte
-}
-
 func (service *AssertionService) Verify(assertObject *AssertionObject, challenge string, clientData []byte) (uint32, error) {
 	// 1. Compute clientDataHash as the SHA256 hash of clientData.
 	clientDataHash := sha256.Sum256(clientData)
