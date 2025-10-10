@@ -96,7 +96,7 @@ func TestAttestationService_Verify(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			target := attest.AttestationService{
-				PathForRootCA: "certs/Apple_App_Attestation_Root_CA.pem",
+				PathForRootCA: "testdata/Apple_App_Attestation_Root_CA.pem",
 				AppID:         tt.appID,
 			}
 

@@ -38,7 +38,7 @@ if err != nil {
     // handle error...
 }
 service := attest.AttestationService{
-    PathForRootCA: "certs/Apple_App_Attestation_Root_CA.pem",
+    PathForRootCA: "testdata/Apple_App_Attestation_Root_CA.pem",
     AppID: "<TEAM ID>.<Bundle ID>",
 }
 result, err := service.Verify(attestObject, clientDataHash[:], keyID)
