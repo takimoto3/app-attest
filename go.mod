@@ -1,6 +1,6 @@
 module github.com/takimoto3/app-attest
 
-go 1.11
+go 1.23
 
 require (
 	github.com/brianolson/cbor_go v1.0.0

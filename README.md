@@ -1,22 +1,16 @@
 # App-Attest
-[![](https://img.shields.io/badge/go-%3E%3D%201.11-blue)](#Installation)
+[![](https://img.shields.io/badge/go-%3E%3D%201.23-blue)](#Installation)
 
 App-Attest is a go package implements the server-side validation of both attestations and assertions that can be obtained using the [DCAppAttestService](https://developer.apple.com/documentation/devicecheck/dcappattestservice).
  * (NOT SUPPORT) Request and analyze risk data from server-to-server calls using recipes
 
 ## System Requirements
 
-* Go 1.11 (or newer)
+* Go 1.23 (or newer)
 
 ## Installation
 ```sh
-# go 1.16 and newer versions. 
 go install github.com/takimoto3/app-attest
-```
-
-```sh
-# other
-go get -u github.com/takimoto3/app-attest
 ```
 
 
