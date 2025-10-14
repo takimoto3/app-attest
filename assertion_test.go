@@ -1,11 +1,11 @@
 package attest_test
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"encoding/base64"
-	"encoding/hex"
-	"strings"
+	"crypto/rand"
+	"crypto/x509"
 	"testing"
 
 	"github.com/pkg/errors"
@@ -18,152 +18,157 @@ type StoredData struct {
 }
 
 func TestAssertionService_Verify(t *testing.T) {
-	testData, err := loadTestData("testdata/attestdata.json")
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genPubKeyData, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testData, err := loadTestData()
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	tests := map[string]struct {
-		appID        string
-		assertObject string
-		clientData   string
-		challenge    string
-		stored       StoredData
-		newCounter   uint32
-		pubkey       string
-		wantErr      error
+		appID      string
+		assertData []byte
+		clientData []byte
+		challenge  string
+		stored     StoredData
+		newCounter uint32
+		pubkey     []byte
+		wantErr    error
 	}{
-		"success case": {
-			testData.AppID,
-			testData.Assertion,
-			requestBody,
-			assertionChallenge,
+		"Success Case": {
+			testData.Assertion.AppID,
+			testData.Assertion.Assertion,
+			testData.Assertion.ClientData,
+			string(testData.Assertion.Challenge),
 			StoredData{
-				Challenge: assertionChallenge,
+				Challenge: string(testData.Assertion.Challenge),
 				Counter:   0,
 			},
 			1,
-			"04" + testData.Publickey, // "04" uncompressed point
+			testData.Assertion.PublicKey,
 			nil,
 		},
-		"error case(different public key)": {
-			testData.AppID,
-			testData.Assertion,
-			requestBody,
-			assertionChallenge,
+		"Error Case:different public key use": {
+			testData.Assertion.AppID,
+			testData.Assertion.Assertion,
+			testData.Assertion.ClientData,
+			string(testData.Assertion.Challenge),
 			StoredData{
-				Challenge: assertionChallenge,
+				Challenge: string(testData.Assertion.Challenge),
 				Counter:   0,
 			},
 			1,
-			"0437c404fa2bbf8fbcf4ee7080573d5fa80c4f6cc3a22f7db43af92c394e7cd1c880c95ab422972625e8e673af1bda2b096654e9b602895601f925bb5941c53082",
+			genPubKeyData,
 			attest.ErrInvalidSignature,
 		},
-		"error case(empty request body)": {
-			testData.AppID,
-			testData.Assertion,
-			"",
-			assertionChallenge,
+		"Error Case:empty request body use": {
+			testData.Assertion.AppID,
+			testData.Assertion.Assertion,
+			[]byte{},
+			string(testData.Assertion.Challenge),
 			StoredData{
-				Challenge: assertionChallenge,
+				Challenge: string(testData.Assertion.Challenge),
 				Counter:   0,
 			},
 			0,
-			"04" + testData.Publickey,
+			testData.Assertion.PublicKey,
 			attest.ErrInvalidSignature,
 		},
-		"error case(client data contains invalid challenge)": {
-			testData.AppID,
-			testData.Assertion,
-			strings.Replace(requestBody, assertionChallenge, "xxxxxxxxxxxxxxxx", 1),
-			assertionChallenge,
+		"Error Case:client data contains invalid challenge use": {
+			testData.Assertion.AppID,
+			testData.Assertion.Assertion,
+			bytes.Replace(testData.Assertion.ClientData, testData.Assertion.Challenge, []byte("xxxxxxxxxxxxxxxx"), 1),
+			string(testData.Assertion.Challenge),
 			StoredData{
-				Challenge: assertionChallenge,
+				Challenge: string(testData.Assertion.Challenge),
 				Counter:   0,
 			},
 			0,
-			"04" + testData.Publickey,
+			testData.Assertion.PublicKey,
 			attest.ErrInvalidSignature,
 		},
-		"error case(invalid challenge)": {
-			testData.AppID,
-			testData.Assertion,
-			requestBody,
+		"Error Case:invalid challenge use": {
+			testData.Assertion.AppID,
+			testData.Assertion.Assertion,
+			testData.Assertion.ClientData,
 			"xxxxxxxxxxxxxxxx",
 			StoredData{
-				Challenge: assertionChallenge,
+				Challenge: string(testData.Assertion.Challenge),
 				Counter:   0,
 			},
 			1,
-			"04" + testData.Publickey,
-			errors.Errorf("invalid challenge expected: %s, received: xxxxxxxxxxxxxxxx", assertionChallenge),
+			testData.Assertion.PublicKey,
+			errors.Errorf("invalid challenge expected: %s, received: xxxxxxxxxxxxxxxx", string(testData.Assertion.Challenge)),
 		},
-		"error case(invalid stored challenge)": {
-			testData.AppID,
-			testData.Assertion,
-			requestBody,
-			assertionChallenge,
+		"Error Case:invalid stored challenge use": {
+			testData.Assertion.AppID,
+			testData.Assertion.Assertion,
+			testData.Assertion.ClientData,
+			string(testData.Assertion.Challenge),
 			StoredData{
 				Challenge: "xxxxxxxxxxxxxxxx",
 				Counter:   0,
 			},
 			1,
-			"04" + testData.Publickey,
-			errors.Errorf("invalid challenge expected: xxxxxxxxxxxxxxxx, received: %s", assertionChallenge),
+			testData.Assertion.PublicKey,
+			errors.Errorf("invalid challenge expected: xxxxxxxxxxxxxxxx, received: %s", string(testData.Assertion.Challenge)),
 		},
-		"error case(invalid AppID)": {
+		"Error Case:invalid AppID use": {
 			"org.sample.AttestSample",
-			testData.Assertion,
-			requestBody,
-			assertionChallenge,
+			testData.Assertion.Assertion,
+			testData.Assertion.ClientData,
+			string(testData.Assertion.Challenge),
 			StoredData{
-				Challenge: assertionChallenge,
+				Challenge: string(testData.Assertion.Challenge),
 				Counter:   0,
 			},
 			1,
-			"04" + testData.Publickey,
+			testData.Assertion.PublicKey,
 			attest.ErrUnmatchRPIDHash,
 		},
-		"error case(lower counter)": {
-			testData.AppID,
-			testData.Assertion,
-			requestBody,
-			assertionChallenge,
+		"Error Case:lower counter use": {
+			testData.Assertion.AppID,
+			testData.Assertion.Assertion,
+			testData.Assertion.ClientData,
+			string(testData.Assertion.Challenge),
 			StoredData{
-				Challenge: assertionChallenge,
+				Challenge: string(testData.Assertion.Challenge),
 				Counter:   3,
 			},
 			1,
-			"04" + testData.Publickey,
+			testData.Assertion.PublicKey,
 			errors.Errorf("counter was not not greater than previous [1, previous: 3]"),
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			pubkeyBytes, err := hex.DecodeString(tt.pubkey)
+			pubany, err := x509.ParsePKIXPublicKey(tt.pubkey)
 			if err != nil {
 				t.Fatal(err)
 			}
-			x, y := elliptic.Unmarshal(elliptic.P256(), pubkeyBytes)
+			pubkey := pubany.(*ecdsa.PublicKey)
+
 			target := attest.AssertionService{
 				AppID:     tt.appID,
 				Challenge: tt.stored.Challenge,
 				Counter:   uint32(tt.stored.Counter),
-				PublicKey: &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y},
-			}
-
-			rawBytes, err := base64.StdEncoding.DecodeString(tt.assertObject)
-			if err != nil {
-				t.Fatal(err)
+				PublicKey: pubkey,
 			}
 
 			assertionObject := &attest.AssertionObject{}
-			err = assertionObject.Unmarshal(rawBytes)
+			err = assertionObject.Unmarshal(tt.assertData)
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := target.Verify(assertionObject, tt.challenge, []byte(tt.clientData))
+			got, err := target.Verify(assertionObject, tt.challenge, tt.clientData)
 			if !IsEquals(tt.wantErr, err) {
 				t.Fatal(err)
 			}

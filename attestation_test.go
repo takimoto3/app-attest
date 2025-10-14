@@ -1,139 +1,108 @@
 package attest_test
 
 import (
-	"crypto/elliptic"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"io/ioutil"
+	"crypto/x509"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/pkg/errors"
 	attest "github.com/takimoto3/app-attest"
+	"github.com/tenntenn/testtime"
 )
 
-type TestData struct {
-	AppID       string
-	KeyID       string
-	Attestation string
-	Publickey   string
-	Assertion   string
-}
-
-// ---
-var attestationChallenge = "l5YkqI0Md8fmcBkw"
-var assertionChallenge = "bBjeLwdQD4KYRpzL"
-var requestBody = "{\"levelId\":\"1234\",\"action\":\"getGameLevel\",\"challenge\":\"bBjeLwdQD4KYRpzL\"}"
-
 func TestAttestationService_Verify(t *testing.T) {
-	testData, err := loadTestData("testdata/attestdata.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	expiredData, err := loadTestData("testdata/attestdata_expired.json")
+	testData, err := loadTestData()
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	tests := map[string]struct {
-		appID        string
-		attestObject string
-		challenge    string
-		keyID        string
-		wantErr      error
-		wantPubkey   string
-		wantEnv      attest.Environment
+		appID          string
+		attestData     []byte
+		clientDataHash []byte
+		keyID          []byte
+		wantErr        error
+		wantPubkey     []byte
+		wantEnv        attest.Environment
 	}{
-		"success case": {
-			testData.AppID,
-			testData.Attestation,
-			attestationChallenge,
-			testData.KeyID,
+		"Success Case": {
+			testData.Attestation.AppID,
+			testData.Attestation.Attestation,
+			testData.Attestation.ClientDataHash,
+			testData.Attestation.KeyId,
 			nil,
-			testData.Publickey,
-			attest.Sandbox,
+			testData.Attestation.PublicKey,
+			testData.Attestation.Environment,
 		},
-		"error case(invalid AppID)": {
+		"Error Case: invalid AppID use": {
 			"org.sample.AttestSample",
-			testData.Attestation,
-			attestationChallenge,
-			testData.KeyID,
+			testData.Attestation.Attestation,
+			testData.Attestation.ClientDataHash,
+			testData.Attestation.KeyId,
 			attest.ErrUnmatchRPIDHash,
-			testData.Publickey,
-			attest.Sandbox,
+			testData.Attestation.PublicKey,
+			testData.Attestation.Environment,
 		},
-		"error case(invalid challenge)": {
-			testData.AppID,
-			testData.Attestation,
-			"xxxxxxxxxxxxxxxx",
-			testData.KeyID,
+		"Error Case:invalid challenge use": {
+			testData.Attestation.AppID,
+			testData.Attestation.Attestation,
+			[]byte("xxxxxxxxxxxxxxxx"),
+			testData.Attestation.KeyId,
 			errors.New("credCert extension does not match nonce"),
-			testData.Publickey,
-			attest.Sandbox,
+			testData.Attestation.PublicKey,
+			testData.Attestation.Environment,
 		},
-		"error case(invalid keyID)": {
-			testData.AppID,
-			testData.Attestation,
-			attestationChallenge,
-			"vZiLwg6bm6++ogVSpwMVJOfseqKs9mMRQamXExFAR+1=",
+		"Error Case:invalid keyID use": {
+			testData.Attestation.AppID,
+			testData.Attestation.Attestation,
+			testData.Attestation.ClientDataHash,
+			decodeB64("vZiLwg6bm6++ogVSpwMVJOfseqKs9mMRQamXExFAR+1="),
 			errors.New("the keyid is not match public key's hash"),
-			testData.Publickey,
-			attest.Sandbox,
+			testData.Attestation.PublicKey,
+			testData.Attestation.Environment,
 		},
-		"error case(certificate expired)": {
-			testData.AppID,
-			expiredData.Attestation,
-			attestationChallenge,
-			expiredData.KeyID,
+		"Error Case: certificate expired": {
+			testData.Attestation.AppID,
+			testData.Attestation.Attestation,
+			testData.Attestation.ClientDataHash,
+			testData.Attestation.KeyId,
 			errors.New("invalid certificate: x509: certificate has expired or is not yet valid"),
-			expiredData.Publickey,
-			attest.None,
+			testData.Attestation.PublicKey,
+			testData.Attestation.Environment,
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
+			// Set a default valid time for most tests (before certificate expiration)
+			testtime.SetTime(t, testData.Attestation.ValidDate)
+			if strings.HasSuffix(name, "certificate expired") {
+				testtime.SetTime(t, testData.Attestation.ExpiredDate)
+			}
+
 			target := attest.AttestationService{
 				PathForRootCA: "testdata/Apple_App_Attestation_Root_CA.pem",
 				AppID:         tt.appID,
 			}
 
 			attestObject := attest.AttestationObject{}
-			rawBytes, err := base64.StdEncoding.DecodeString(tt.attestObject)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := attestObject.Unmarshal(rawBytes); err != nil {
+			if err := attestObject.Unmarshal(tt.attestData); err != nil {
 				t.Fatal(err)
 			}
 
-			clientData, err := base64.StdEncoding.DecodeString(tt.challenge)
-			if err != nil {
-				t.Fatal(err)
-			}
-			clientDataHash := sha256.Sum256(clientData)
-			keyID, err := base64.StdEncoding.DecodeString(tt.keyID)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			result, err := target.Verify(&attestObject, clientDataHash[:], keyID)
+			result, err := target.Verify(&attestObject, tt.clientDataHash, tt.keyID)
 			if !IsEquals(tt.wantErr, err) {
 				t.Fatal(err)
 			}
 
 			if result != nil {
-				pubkey := elliptic.Marshal(result.PublicKey.Curve, result.PublicKey.X, result.PublicKey.Y)
-				t.Logf("pubkey: [%s]", hex.EncodeToString(pubkey))
-				if len(pubkey) != 65 {
-					t.Errorf("invalid public key got length: %d", len(pubkey))
+				gotPubkey, err := x509.MarshalPKIXPublicKey(result.PublicKey)
+				if err != nil {
+					t.Fatal(err)
 				}
-
-				gotPubkey := strings.Replace(hex.EncodeToString(pubkey), "04", "", 1) // "04" uncompressed point
-				if tt.wantPubkey != gotPubkey {
-					t.Errorf("invalid public key. want:%s, got:%s", tt.wantPubkey, gotPubkey)
+				if diff := cmp.Diff(tt.wantPubkey, gotPubkey); diff != "" {
+					t.Errorf("Mismatch (-want +got):\n%s", diff)
 				}
 				if tt.wantEnv != result.Environment {
 					t.Errorf("invaild enviroment value want: %s, got: %s", tt.wantEnv, result.Environment)
@@ -147,22 +116,12 @@ func TestAttestationService_Verify(t *testing.T) {
 	}
 }
 
-func loadTestData(path string) (*TestData, error) {
-	bytes, err := ioutil.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var testData TestData
-	if err := json.Unmarshal(bytes, &testData); err != nil {
-		return nil, err
-	}
-	return &testData, nil
-}
-
-func IsEquals(err, target error) bool {
+func IsEquals(target, err error) bool {
 	if target == nil || err == nil {
 		return err == target
 	}
-	return err.Error() == target.Error()
+	if errors.As(err, &target) {
+		return true
+	}
+	return strings.Contains(err.Error(), target.Error())
 }
