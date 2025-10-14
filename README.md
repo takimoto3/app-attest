@@ -125,5 +125,9 @@ Finally run test
 I referred to [appattest](https://github.com/bas-d/appattest) by Bas Doorn when creating this library. thanks!
 
 
+## Third-Party Attributions
+
+This project uses `github.com/brianolson/cbor_go` for CBOR encoding/decoding, which is licensed under the Apache License 2.0.
+
 ## License
 App-Attest is available under the MIT license. See the LICENSE file for more info.
