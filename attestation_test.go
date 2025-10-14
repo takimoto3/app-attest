@@ -22,7 +22,7 @@ type TestData struct {
 	Assertion   string
 }
 
-//---
+// ---
 var attestationChallenge = "l5YkqI0Md8fmcBkw"
 var assertionChallenge = "bBjeLwdQD4KYRpzL"
 var requestBody = "{\"levelId\":\"1234\",\"action\":\"getGameLevel\",\"challenge\":\"bBjeLwdQD4KYRpzL\"}"
@@ -53,7 +53,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			testData.KeyID,
 			nil,
 			testData.Publickey,
-			attest.Development,
+			attest.Sandbox,
 		},
 		"error case(invalid AppID)": {
 			"org.sample.AttestSample",
@@ -62,7 +62,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			testData.KeyID,
 			attest.ErrUnmatchRPIDHash,
 			testData.Publickey,
-			attest.Development,
+			attest.Sandbox,
 		},
 		"error case(invalid challenge)": {
 			testData.AppID,
@@ -71,7 +71,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			testData.KeyID,
 			errors.New("credCert extension does not match nonce"),
 			testData.Publickey,
-			attest.Development,
+			attest.Sandbox,
 		},
 		"error case(invalid keyID)": {
 			testData.AppID,
@@ -80,7 +80,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			"vZiLwg6bm6++ogVSpwMVJOfseqKs9mMRQamXExFAR+1=",
 			errors.New("the keyid is not match public key's hash"),
 			testData.Publickey,
-			attest.Development,
+			attest.Sandbox,
 		},
 		"error case(certificate expired)": {
 			testData.AppID,
