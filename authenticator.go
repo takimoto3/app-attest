@@ -3,8 +3,14 @@ package attest
 import (
 	"encoding/binary"
 	"fmt"
+)
 
-	"github.com/pkg/errors"
+// https://www.w3.org/TR/webauthn-2/#flags
+const (
+	//	UserPresent  byte = 1 << 0 // bit0: User Present (UP)
+	//	UserVerified byte = 1 << 2 // bit2: User Verified (UV)
+	Attested byte = 1 << 6 // bit6: Attested credential data included (AT)
+// Extensions   byte = 1 << 7 // bit7: Extension data included (ED)
 )
 
 const minAuthDataLen = 37
@@ -24,13 +30,12 @@ type AttestedCredential struct {
 }
 
 func (auth *AuthenticatorData) HasAttestedCredentialData() bool {
-	var includeCredential byte = 1 << 6
-	return (auth.Flags & includeCredential) == includeCredential
+	return auth.Flags&Attested != 0
 }
 
 func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
 	if minAuthDataLen > len(rawBytes) {
-		return errors.Errorf("authenticator data length too short: got %d bytes", len(rawBytes))
+		return fmt.Errorf("authenticator data length too short: got %d bytes", len(rawBytes))
 	}
 	auth.RPIDHash = rawBytes[:32]
 	auth.Flags = rawBytes[32]
@@ -51,7 +56,7 @@ func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
 		}
 	}
 	if remain != 0 {
-		return fmt.Errorf("decode authenticator data size incorrect")
+		return fmt.Errorf("unexpected trailing data in authenticator data")
 	}
 
 	return nil
