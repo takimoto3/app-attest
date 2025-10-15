@@ -3,6 +3,7 @@ package attest_test
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 
 	attest "github.com/takimoto3/app-attest"
@@ -56,6 +57,27 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 			"",
 			fmt.Errorf("authenticator data length too short: got 0 bytes"),
 		},
+		"valid authenticator data without attested credential": {
+			func() string {
+				raw := make([]byte, 37)
+				raw[32] = 0x01 // bit0 = User Present, bit6 = AttestedCredentialData なし
+				return base64.StdEncoding.EncodeToString(raw)
+			}(),
+			nil,
+		},
+		"too short overall": {
+			// shorter than minAuthDataLen (37 bytes)
+			rawString: base64.StdEncoding.EncodeToString(make([]byte, 20)),
+			err:       fmt.Errorf("authenticator data length too short: got 20 bytes"),
+		},
+		"extra trailing bytes": {
+			func() string {
+				raw := make([]byte, 37)
+				raw = append(raw, make([]byte, 10)...) // unexpected extra data
+				return base64.StdEncoding.EncodeToString(raw)
+			}(),
+			fmt.Errorf("unexpected trailing data in authenticator data"),
+		},
 	}
 
 	for name, tt := range tests {
@@ -65,11 +87,19 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 			if err != nil {
 				t.Error(err)
 			}
-			if err = auth.Unmarshal(rawBytes); err != tt.err {
-				if tt.err != nil && err.Error() == tt.err.Error() {
-				} else {
-					t.Error(err)
+			err = auth.Unmarshal(rawBytes)
+			if tt.err == nil {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
 				}
+				return
+			}
+			if err == nil {
+				t.Errorf("expected error %v, got nil", tt.err)
+				return
+			}
+			if !strings.Contains(err.Error(), tt.err.Error()) {
+				t.Errorf("expected error %q, got %q", tt.err.Error(), err.Error())
 			}
 		})
 	}
