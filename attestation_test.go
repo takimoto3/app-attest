@@ -2,11 +2,11 @@ package attest_test
 
 import (
 	"crypto/x509"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/pkg/errors"
 	attest "github.com/takimoto3/app-attest"
 	"github.com/tenntenn/testtime"
 )
@@ -120,7 +120,7 @@ func IsEquals(target, err error) bool {
 	if target == nil || err == nil {
 		return err == target
 	}
-	if errors.As(err, &target) {
+	if errors.Is(err, target) {
 		return true
 	}
 	return strings.Contains(err.Error(), target.Error())

@@ -2,9 +2,9 @@ package attest_test
 
 import (
 	"encoding/base64"
+	"fmt"
 	"testing"
 
-	"github.com/pkg/errors"
 	attest "github.com/takimoto3/app-attest"
 )
 
@@ -54,7 +54,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 		},
 		"empty authenticator data": {
 			"",
-			errors.Errorf("authenticator data length too short: got 0 bytes"),
+			fmt.Errorf("authenticator data length too short: got 0 bytes"),
 		},
 	}
 

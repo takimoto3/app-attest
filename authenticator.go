@@ -2,6 +2,7 @@ package attest
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/pkg/errors"
 )
@@ -50,7 +51,7 @@ func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
 		}
 	}
 	if remain != 0 {
-		return errors.Errorf("decode authenticator data size incorrect")
+		return fmt.Errorf("decode authenticator data size incorrect")
 	}
 
 	return nil

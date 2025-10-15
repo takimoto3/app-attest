@@ -4,13 +4,10 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/sha256"
-	"math/big"
-
-	"golang.org/x/crypto/cryptobyte"
-	"golang.org/x/crypto/cryptobyte/asn1"
+	"errors"
+	"fmt"
 
 	cbor "github.com/brianolson/cbor_go"
-	"github.com/pkg/errors"
 )
 
 var (
@@ -45,14 +42,14 @@ func (service *AssertionService) Verify(assertObject *AssertionObject, challenge
 
 	// 3. Use the public key that you store from the attestation object to verify that the assertion’s signature is valid for nonce.
 	nonceHash := sha256.Sum256(nonce[:])
-	if ok := VerifyASN1(service.PublicKey, nonceHash[:], assertObject.Signature); !ok {
+	if ok := ecdsa.VerifyASN1(service.PublicKey, nonceHash[:], assertObject.Signature); !ok {
 		return 0, ErrInvalidSignature
 	}
 
 	// 4. Compute the SHA256 hash of the client’s App ID, and verify that it matches the RP ID in the authenticator data.
 	authData := AuthenticatorData{}
 	if err := authData.Unmarshal(assertObject.AuthData); err != nil {
-		return 0, errors.Wrap(err, "authenticator data decoding failed")
+		return 0, fmt.Errorf("authenticator data decoding failed: %w", err)
 	}
 	appIDHash := sha256.Sum256([]byte(service.AppID))
 	if !bytes.Equal(authData.RPIDHash[:], appIDHash[:]) {
@@ -61,32 +58,13 @@ func (service *AssertionService) Verify(assertObject *AssertionObject, challenge
 
 	// 5. Verify that the authenticator data’s counter value is greater than the value from the previous assertion, or greater than 0 on the first assertion.
 	if authData.Counter <= service.Counter {
-		return 0, errors.Errorf("counter was not not greater than previous [%d, previous: %d]", authData.Counter, service.Counter)
+		return 0, fmt.Errorf("counter was not not greater than previous [%d, previous: %d]", authData.Counter, service.Counter)
 	}
 
 	// 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
 	if challenge != service.Challenge {
-		return 0, errors.Errorf("invalid challenge expected: %s, received: %s", service.Challenge, challenge)
+		return 0, fmt.Errorf("invalid challenge expected: %s, received: %s", service.Challenge, challenge)
 	}
 
 	return authData.Counter, nil
-}
-
-// [backport golang 1.15]ecdsa.VerifyASN1
-// VerifyASN1 verifies the ASN.1 encoded signature, sig, of hash using the
-// public key, pub. Its return value records whether the signature is valid.
-func VerifyASN1(pub *ecdsa.PublicKey, hash, sig []byte) bool {
-	var (
-		r, s  = &big.Int{}, &big.Int{}
-		inner cryptobyte.String
-	)
-	input := cryptobyte.String(sig)
-	if !input.ReadASN1(&inner, asn1.SEQUENCE) ||
-		!input.Empty() ||
-		!inner.ReadASN1Integer(r) ||
-		!inner.ReadASN1Integer(s) ||
-		!inner.Empty() {
-		return false
-	}
-	return ecdsa.Verify(pub, hash, r, s)
 }
