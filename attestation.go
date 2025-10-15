@@ -17,15 +17,15 @@ type Environment int
 
 // attestation envirom
 const (
-	None                    = 0
-	Development Environment = 1 // the App Attest sandbox environment.
-	Production  Environment = 2 // The App Attest production environment.
+	None                   = 0
+	Sandbox    Environment = 1 // the App Attest sandbox environment.
+	Production Environment = 2 // The App Attest production environment.
 )
 
 func (e Environment) String() string {
 	switch e {
-	case Development:
-		return "Development"
+	case Sandbox:
+		return "Sandbox"
 	case Production:
 		return "Production"
 	}
@@ -180,7 +180,7 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 	case "appattest":
 		env = Production
 	case "appattestdevelop":
-		env = Development
+		env = Sandbox
 	default:
 		return nil, errors.Errorf("invalid aaguid value")
 	}

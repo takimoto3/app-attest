@@ -18,11 +18,17 @@ jobs:
       with:
         go-version: '1.23'
 
-    - name: Build
-      run: go build -v ./...
+    - name: Install testtime
+      run: go install github.com/tenntenn/testtime/cmd/testtime@latest
 
     - name: Install govulncheck
       run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Test
+      run: go test -v -overlay=$(go run github.com/tenntenn/testtime/cmd/testtime@latest) ./...
 
     - name: Run govulncheck
       run: govulncheck ./...
