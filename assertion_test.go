@@ -6,9 +6,9 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"fmt"
 	"testing"
 
-	"github.com/pkg/errors"
 	attest "github.com/takimoto3/app-attest"
 )
 
@@ -105,7 +105,7 @@ func TestAssertionService_Verify(t *testing.T) {
 			},
 			1,
 			testData.Assertion.PublicKey,
-			errors.Errorf("invalid challenge expected: %s, received: xxxxxxxxxxxxxxxx", string(testData.Assertion.Challenge)),
+			fmt.Errorf("invalid challenge expected: %s, received: xxxxxxxxxxxxxxxx", string(testData.Assertion.Challenge)),
 		},
 		"Error Case:invalid stored challenge use": {
 			testData.Assertion.AppID,
@@ -118,7 +118,7 @@ func TestAssertionService_Verify(t *testing.T) {
 			},
 			1,
 			testData.Assertion.PublicKey,
-			errors.Errorf("invalid challenge expected: xxxxxxxxxxxxxxxx, received: %s", string(testData.Assertion.Challenge)),
+			fmt.Errorf("invalid challenge expected: xxxxxxxxxxxxxxxx, received: %s", string(testData.Assertion.Challenge)),
 		},
 		"Error Case:invalid AppID use": {
 			"org.sample.AttestSample",
@@ -144,7 +144,7 @@ func TestAssertionService_Verify(t *testing.T) {
 			},
 			1,
 			testData.Assertion.PublicKey,
-			errors.Errorf("counter was not not greater than previous [1, previous: 3]"),
+			fmt.Errorf("counter was not not greater than previous [1, previous: 3]"),
 		},
 	}
 

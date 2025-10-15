@@ -1,7 +1,7 @@
 # App-Attest
 [![](https://img.shields.io/badge/go-%3E%3D%201.23-blue)](#Installation)
 
-App-Attest is a go package implements the server-side validation of both attestations and assertions that can be obtained using the [DCAppAttestService](https://developer.apple.com/documentation/devicecheck/dcappattestservice).
+App-Attest is a Go package that implements the server-side validation of both attestations and assertions that can be obtained using the [DCAppAttestService](https://developer.apple.com/documentation/devicecheck/dcappattestservice).
  * (NOT SUPPORT) Request and analyze risk data from server-to-server calls using recipes
 
 ## System Requirements
@@ -43,7 +43,7 @@ if err != nil {
 // use result ....
 ```
 
-The Verify function return attest.Result(contain the public key and receipt and enviroment) if the validation succeeds. The public key and receipt should be save.
+The `Verify` function returns `attest.Result` (containing the public key, receipt, and environment) if the validation succeeds. The public key and receipt should be saved.
 
 ### Assertion
 
@@ -72,7 +72,7 @@ if err != nil {
     // handle error...
 }
 ```
-If the assertion is successful, get a new counter and save it
+If the assertion is successful, get a new counter and save it.
 
 ## Testing
 
@@ -85,8 +85,6 @@ Run the following command to test.
 ```sh
 go test -overlay=$(go run github.com/tenntenn/testtime/cmd/testtime@latest) ./...
 ```
-
-Finally run test
 
 When running the tests, the test runner will first look for a file named `testdata/attestdata.json`. If this file is present, it will be used as the source for test data. This is useful if you want to provide your own test data. If this file is not found, the test runner will fall back to using the default `testdata/ios-14.4.json` file.
 
@@ -168,11 +166,9 @@ func generate() async throws {
 *   [Attestation Object Validation Guide](https://developer.apple.com/documentation/devicecheck/attestation-object-validation-guide)
 *   [Preparing to use the app attest service](https://developer.apple.com/documentation/devicecheck/preparing-to-use-the-app-attest-service)
 
-Finally run test
-
 ## Acknowledgements
 
-I referred to [appattest](https://github.com/bas-d/appattest) by Bas Doorn when creating this library. thanks!
+I referred to [appattest](https://github.com/bas-d/appattest) by Bas Doorn when creating this library. Their work was a valuable reference.
 
 
 ## Third-Party Attributions
