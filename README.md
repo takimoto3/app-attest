@@ -173,8 +173,6 @@ I referred to [appattest](https://github.com/bas-d/appattest) by Bas Doorn when 
 
 ## Third-Party Attributions
 
-This project uses `github.com/brianolson/cbor_go` for CBOR encoding/decoding, which is licensed under the Apache License 2.0.
-
 This project uses `github.com/google/go-cmp` for comparing Go values in tests, which is licensed under the BSD 3-Clause License.
 
 Test data used in this project is from [veehaitch/devicecheck-appattest](https://github.com/veehaitch/devicecheck-appattest), which is licensed under the Apache License 2.0.

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"fmt"
+	"reflect"
 	"testing"
 
 	attest "github.com/takimoto3/app-attest"
@@ -164,7 +165,7 @@ func TestAssertionService_Verify(t *testing.T) {
 			}
 
 			assertionObject := &attest.AssertionObject{}
-			err = assertionObject.Unmarshal(tt.assertData)
+			err = assertionObject.UnmarshalCBOR(tt.assertData)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,5 +179,38 @@ func TestAssertionService_Verify(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+const AssertionObjectB64 = "omlzaWduYXR1cmVYRjBEAiBJ6BT/QR689UKy84YyN3RDydYD9KVQ2BTRK+x1i8ezqAIgGM7BsZbSuF6TjmK6xtOFekyVyjf8akGvp5qFRGm9LTxxYXV0aGVudGljYXRvckRhdGFYJUVlEup+JpR2q5Pht5cWhVkv9z+JSsDsL9VICKCL+2yPQAAAAAE="
+
+func TestAssertionObject_UnmarshalCBOR(t *testing.T) {
+	data := decodeB64(AssertionObjectB64)
+
+	var ao attest.AssertionObject
+	if err := ao.UnmarshalCBOR(data); err != nil {
+		t.Fatalf("UnmarshalCBOR failed: %v", err)
+	}
+
+	wantAuthData := decodeB64("RWUS6n4mlHark+G3lxaFWS/3P4lKwOwv1UgIoIv7bI9AAAAAAQ==")
+	if !reflect.DeepEqual(wantAuthData, ao.AuthData) {
+		t.Error("AssertionObject.AuthData unmatched")
+	}
+	wantSignature := decodeB64("MEQCIEnoFP9BHrz1QrLzhjI3dEPJ1gP0pVDYFNEr7HWLx7OoAiAYzsGxltK4XpOOYrrG04V6TJXKN/xqQa+nmoVEab0tPA==")
+	if !reflect.DeepEqual(wantSignature, ao.Signature) {
+		t.Error("AssertionObject.Signature unmatched")
+	}
+}
+
+func BenchmarkAssertionObject_UnmarshalCBOR(b *testing.B) {
+	data := decodeB64(AssertionObjectB64)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		var ao attest.AssertionObject
+		if err := ao.UnmarshalCBOR(data); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	cbor "github.com/brianolson/cbor_go"
+	"github.com/takimoto3/app-attest/cbor"
 )
 
 var (
@@ -21,11 +21,6 @@ type AssertionObject struct {
 	AuthData  []byte `cbor:"authenticatorData"`
 }
 
-func (obj *AssertionObject) Unmarshal(rawBytes []byte) error {
-	dec := cbor.NewDecoder(bytes.NewReader(rawBytes))
-	return dec.Decode(obj)
-}
-
 type AssertionService struct {
 	AppID     string
 	Challenge string
@@ -33,6 +28,7 @@ type AssertionService struct {
 	Counter   uint32
 }
 
+// Verify checks a single assertion object and returns the counter.
 func (service *AssertionService) Verify(assertObject *AssertionObject, challenge string, clientData []byte) (uint32, error) {
 	// 1. Compute clientDataHash as the SHA256 hash of clientData.
 	clientDataHash := sha256.Sum256(clientData)
@@ -67,4 +63,64 @@ func (service *AssertionService) Verify(assertObject *AssertionObject, challenge
 	}
 
 	return authData.Counter, nil
+}
+
+// UnmarshalCBOR decodes the CBOR-encoded data into the AssertionObject.
+//
+// Returns an error if the data is malformed or contains unexpected types.
+func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
+	dec := cbor.NewDecoder(data)
+	mt, ai, err := dec.ReadHeader()
+	if err != nil {
+		return err
+	}
+	if mt != cbor.Map {
+		return fmt.Errorf("cbor: expected map for AssertionObject got %v", mt)
+	}
+	size, err := dec.ReadAdditional(ai)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < int(size); i++ {
+		mt, ai, err := dec.ReadHeader()
+		if err != nil {
+			return err
+		}
+		if mt != cbor.TextString {
+			return fmt.Errorf("cbor: expected textstring for map key got %v", mt)
+		}
+		key, err := dec.ReadTextString(ai)
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "signature":
+			mt, ai, err = dec.ReadHeader()
+			if err != nil {
+				return err
+			}
+			if mt != cbor.ByteString {
+				return fmt.Errorf("cbor: expected bytestring for \"signature\", got %v", mt)
+			}
+			val, err := dec.ReadByteString(ai)
+			if err != nil {
+				return err
+			}
+			ao.Signature = val
+		case "authenticatorData":
+			mt, ai, err = dec.ReadHeader()
+			if err != nil {
+				return err
+			}
+			if mt != cbor.ByteString {
+				return fmt.Errorf("cbor: expected bytestring for \"authenticatorData\", got %v", mt)
+			}
+			val, err := dec.ReadByteString(ai)
+			if err != nil {
+				return err
+			}
+			ao.AuthData = val
+		}
+	}
+	return nil
 }

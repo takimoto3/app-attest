@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	cbor "github.com/brianolson/cbor_go"
+	"github.com/takimoto3/app-attest/cbor"
 )
 
 type Environment int
@@ -31,18 +31,22 @@ func (e Environment) String() string {
 	return "Invalid Environment"
 }
 
+// AttestationObject represents the CBOR-encoded attestation object returned by the authenticator.
+// In App Attest, it includes the authenticator data, format identifier, and Apple's attestation statement.
 type AttestationObject struct {
 	// The byteform version of the authenticator data, used in part for signature validation
 	AuthData []byte `cbor:"authData"`
 	// The format of the Attestation data.
 	Format string `cbor:"fmt"`
-	// The attestation statement data sent back if attestation is requested.
-	AttStatement map[string]interface{} `cbor:"attStmt,omitempty"`
+	// Attestation statement containing certificate chain and receipt
+	AttStmt AttStmt `cbor:"attStmt"`
 }
 
-func (obj *AttestationObject) Unmarshal(rawBytes []byte) error {
-	dec := cbor.NewDecoder(bytes.NewReader(rawBytes))
-	return dec.Decode(obj)
+// AttStmt represents the attestation statement in a WebAuthn AttestationObject.
+// For App Attest, it includes the certificate chain (x5c) and the Apple-issued receipt.
+type AttStmt struct {
+	X5C     [][]byte `cbor:"x5c"`     // Certificate chain used for attestation
+	Receipt []byte   `cbor:"receipt"` // Apple App Attest receipt
 }
 
 type Result struct {
@@ -60,11 +64,7 @@ type AttestationService struct {
 
 // Verify validate a single attestation object and return result object.
 func (service *AttestationService) Verify(attestObj *AttestationObject, clientDataHash, keyID []byte) (*Result, error) {
-	receipt, ok := attestObj.AttStatement["receipt"].([]byte)
-	if !ok {
-		return nil, fmt.Errorf("invalid receipt value")
-	}
-
+	receipt := attestObj.AttStmt.Receipt
 	roots := x509.NewCertPool()
 	intermediates := x509.NewCertPool()
 
@@ -76,17 +76,9 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 		return nil, fmt.Errorf("adding root cerfificate to pool")
 	}
 
-	x5cArray, ok := attestObj.AttStatement["x5c"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid x5c value")
-	}
-
-	for _, x5c := range x5cArray {
-		raw, ok := x5c.([]byte)
-		if !ok {
-			return nil, fmt.Errorf("invalid certificate from x5c cert chain 1")
-		}
-		cert, err := x509.ParseCertificate(raw)
+	x5chain := attestObj.AttStmt.X5C
+	for _, chain := range x5chain {
+		cert, err := x509.ParseCertificate(chain)
 		if err != nil {
 			return nil, fmt.Errorf("parsing certificate from ASN.1 data failed: %w", err)
 		}
@@ -94,12 +86,7 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 			intermediates.AddCert(cert)
 		}
 	}
-
-	rawBytes, ok := x5cArray[0].([]byte)
-	if !ok {
-		return nil, fmt.Errorf("invalid certificate from x5c cert chain 2")
-	}
-	credCert, err := x509.ParseCertificate(rawBytes)
+	credCert, err := x509.ParseCertificate(x5chain[0])
 	if err != nil {
 		return nil, fmt.Errorf("parsing certificate from ASN.1 data failed: %w", err)
 	}
@@ -218,4 +205,142 @@ func MarshalUncompressed(pub *ecdsa.PublicKey) []byte {
 	copy(data[1:1+byteLen], x)
 	copy(data[1+byteLen:], y)
 	return data
+}
+
+// UnmarshalCBOR decodes CBOR data into the AttestationObject.
+//
+// Used during registration to parse the authenticator’s attestation response.
+func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
+	dec := cbor.NewDecoder(data)
+	mt, ai, err := dec.ReadHeader()
+	if err != nil {
+		return err
+	}
+	if mt != cbor.Map {
+		return fmt.Errorf("cbor: expected map for AttestationObject got %v", mt)
+	}
+	size, err := dec.ReadAdditional(ai)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < int(size); i++ {
+		mt, ai, err := dec.ReadHeader()
+		if err != nil {
+			return err
+		}
+		if mt != cbor.TextString {
+			return fmt.Errorf("cbor: expected textstring for map key got %v", mt)
+		}
+		key, err := dec.ReadTextString(ai)
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "fmt":
+			mt, ai, err = dec.ReadHeader()
+			if err != nil {
+				return err
+			}
+			if mt != cbor.TextString {
+				return fmt.Errorf("cbor: expected textstring for \"fmt\", got %v", mt)
+			}
+			val, err := dec.ReadTextString(ai)
+			if err != nil {
+				return err
+			}
+			ao.Format = val
+		case "authData":
+			mt, ai, err = dec.ReadHeader()
+			if err != nil {
+				return err
+			}
+			if mt != cbor.ByteString {
+				return fmt.Errorf("cbor: expected bytestring for \"authData\", got %v", mt)
+			}
+			val, err := dec.ReadByteString(ai)
+			if err != nil {
+				return err
+			}
+			ao.AuthData = val
+		case "attStmt":
+			stmt := AttStmt{}
+			if err = stmt.UnmarshalCBOR(dec); err != nil {
+				return err
+			}
+			ao.AttStmt = stmt
+		}
+	}
+	return nil
+}
+
+// UnmarshalCBOR decodes the CBOR fields of the attestation statement (X5C and receipt).
+func (as *AttStmt) UnmarshalCBOR(dec *cbor.Decoder) error {
+	mt, ai, err := dec.ReadHeader()
+	if err != nil {
+		return err
+	}
+	if mt != cbor.Map {
+		return fmt.Errorf("cbor: expected map for \"attStmt\", got %v", mt)
+	}
+	size, err := dec.ReadAdditional(ai)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < int(size); i++ {
+		mt, ai, err := dec.ReadHeader()
+		if err != nil {
+			return err
+		}
+		if mt != cbor.TextString {
+			return fmt.Errorf("cbor: expected textstring for attStmt map key got %v", mt)
+		}
+		key, err := dec.ReadTextString(ai)
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "receipt":
+			mt, ai, err = dec.ReadHeader()
+			if err != nil {
+				return err
+			}
+			if mt != cbor.ByteString {
+				return fmt.Errorf("cbor: expected bytestring for \"receipt\", got %v", mt)
+			}
+			val, err := dec.ReadByteString(ai)
+			if err != nil {
+				return err
+			}
+			as.Receipt = val
+		case "x5c":
+			mt, ai, err = dec.ReadHeader()
+			if err != nil {
+				return err
+			}
+			if mt != cbor.Array {
+				return fmt.Errorf("cbor: expected array for \"x5c\", got %v", mt)
+			}
+			size, err := dec.ReadAdditional(ai)
+			if err != nil {
+				return err
+			}
+			array := make([][]byte, size)
+			for i := 0; i < int(size); i++ {
+				mt, ai, err = dec.ReadHeader()
+				if err != nil {
+					return err
+				}
+				if mt != cbor.ByteString {
+					return fmt.Errorf("cbor: expected bytestring in \"x5c array\", got %v", mt)
+				}
+				val, err := dec.ReadByteString(ai)
+				if err != nil {
+					return err
+				}
+				array[i] = val
+			}
+			as.X5C = array
+		}
+	}
+	return nil
 }
