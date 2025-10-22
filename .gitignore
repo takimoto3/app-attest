@@ -18,3 +18,6 @@
 # These are ignored because they contain environment-specific or temporary data.
 testdata/attestdata.json
 testdata/attestdata_expired.json
+
+# macOS generated files
+.DS_Store

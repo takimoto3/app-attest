@@ -31,9 +31,12 @@ err := attestationObj.Unmarshal(attestation)
 if err != nil {
     // handle error...
 }
-service := attest.AttestationService{
-    PathForRootCA: "testdata/Apple_App_Attestation_Root_CA.pem",
-    AppID: "<TEAM ID>.<Bundle ID>",
+service, err := attest.NewAttestationService(
+    "testdata/Apple_App_Attestation_Root_CA.pem", // Path to your root CA file
+    "<TEAM ID>.<Bundle ID>",                      // Your App ID
+)
+if err != nil {
+    // handle error...
 }
 result, err := service.Verify(attestObject, clientDataHash[:], keyID)
 if err != nil {
