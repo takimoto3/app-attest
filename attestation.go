@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
+	"errors"
 	"fmt"
 	"os"
 
@@ -56,25 +57,35 @@ type Result struct {
 }
 
 type AttestationService struct {
-	// Apple’s App Attest root certificate file path
-	PathForRootCA string
+	// RootCertPool holds the loaded root CA certificates for signature verification.
+	RootCertPool *x509.CertPool
+
 	// App Identifier (format: teamID + "." + bundleID)
 	AppID string
+}
+
+func NewAttestationService(rootCAPath, appID string) (*AttestationService, error) {
+	pemData, err := os.ReadFile(rootCAPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read root CA file at %s: %w", rootCAPath, err)
+	}
+
+	pool := x509.NewCertPool()
+	if ok := pool.AppendCertsFromPEM(pemData); !ok {
+		return nil, errors.New("failed to parse any valid certificates from the provided PEM data")
+	}
+
+	return &AttestationService{
+		RootCertPool: pool,
+		AppID:        appID,
+	}, nil
 }
 
 // Verify validate a single attestation object and return result object.
 func (service *AttestationService) Verify(attestObj *AttestationObject, clientDataHash, keyID []byte) (*Result, error) {
 	receipt := attestObj.AttStmt.Receipt
-	roots := x509.NewCertPool()
+	roots := service.RootCertPool.Clone()
 	intermediates := x509.NewCertPool()
-
-	fileBytes, err := os.ReadFile(service.PathForRootCA)
-	if err != nil {
-		return nil, fmt.Errorf("pem file read failed: %w", err)
-	}
-	if ok := roots.AppendCertsFromPEM(fileBytes); !ok {
-		return nil, fmt.Errorf("adding root cerfificate to pool")
-	}
 
 	x5chain := attestObj.AttStmt.X5C
 	for _, chain := range x5chain {

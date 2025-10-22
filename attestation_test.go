@@ -82,9 +82,9 @@ func TestAttestationService_Verify(t *testing.T) {
 				testtime.SetTime(t, testData.Attestation.ExpiredDate)
 			}
 
-			target := attest.AttestationService{
-				PathForRootCA: "testdata/Apple_App_Attestation_Root_CA.pem",
-				AppID:         tt.appID,
+			target, err := attest.NewAttestationService("testdata/Apple_App_Attestation_Root_CA.pem", tt.appID)
+			if err != nil {
+				t.Fatal(err)
 			}
 
 			attestObject := attest.AttestationObject{}
