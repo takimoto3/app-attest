@@ -1,4 +1,4 @@
-package attest_test
+package attest
 
 import (
 	"encoding/base64"
@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"time"
-
-	attest "github.com/takimoto3/app-attest"
 )
 
 type Attestation struct {
@@ -19,7 +17,7 @@ type Attestation struct {
 	BundleIdentifier string
 	ClientDataBase64 string
 	ClientDataHash   []byte
-	Environment      attest.Environment
+	Environment      Environment
 	ID               string
 	IOSVersion       float64
 	KeyId            []byte
@@ -157,14 +155,14 @@ func (t *TestData) UnmarshalJSON(b []byte) error {
 		return t
 	}
 
-	parseEnvironment := func(s string) attest.Environment {
+	parseEnvironment := func(s string) Environment {
 		switch s {
 		case "development", "sandbox":
-			return attest.Sandbox
+			return Sandbox
 		case "production":
-			return attest.Production
+			return Production
 		}
-		return attest.None
+		return None
 	}
 
 	// Attestation
@@ -172,14 +170,14 @@ func (t *TestData) UnmarshalJSON(b []byte) error {
 		ValidDate:        parseTime(tmp.Attestation.ValidDate),
 		ExpiredDate:      parseTime(tmp.Attestation.ExpiredDate),
 		AppID:            fmt.Sprintf("%s.%s", tmp.Attestation.TeamIdentifier, tmp.Attestation.BundleIdentifier),
-		Attestation:      decodeB64(tmp.Attestation.AttestationBase64),
+		Attestation:      DecodeB64(tmp.Attestation.AttestationBase64),
 		BundleIdentifier: tmp.Attestation.BundleIdentifier,
 		ClientDataBase64: tmp.Attestation.ClientDataBase64,
-		ClientDataHash:   decodeB64(tmp.Attestation.ClientDataHashSha256Base64),
+		ClientDataHash:   DecodeB64(tmp.Attestation.ClientDataHashSha256Base64),
 		Environment:      parseEnvironment(tmp.Attestation.Environment),
 		ID:               tmp.Attestation.ID,
 		IOSVersion:       tmp.Attestation.IOSVersion,
-		KeyId:            decodeB64(tmp.Attestation.KeyIdBase64),
+		KeyId:            DecodeB64(tmp.Attestation.KeyIdBase64),
 		PublicKey:        pemtToDER(tmp.Attestation.PublicKey),
 		TeamIdentifier:   tmp.Attestation.TeamIdentifier,
 		Timestamp:        parseTime(tmp.Attestation.Timestamp),
@@ -189,10 +187,10 @@ func (t *TestData) UnmarshalJSON(b []byte) error {
 	// Assertion
 	t.Assertion = Assertion{
 		AppID:                      fmt.Sprintf("%s.%s", tmp.Assertion.TeamIdentifier, tmp.Assertion.BundleIdentifier),
-		Assertion:                  decodeB64(tmp.Assertion.AssertionBase64),
+		Assertion:                  DecodeB64(tmp.Assertion.AssertionBase64),
 		BundleIdentifier:           tmp.Assertion.BundleIdentifier,
-		Challenge:                  decodeB64(tmp.Assertion.ChallengeBase64),
-		ClientData:                 decodeB64(tmp.Assertion.ClientDataBase64),
+		Challenge:                  DecodeB64(tmp.Assertion.ChallengeBase64),
+		ClientData:                 DecodeB64(tmp.Assertion.ClientDataBase64),
 		ClientDataHashSha256Base64: tmp.Assertion.ClientDataHashSha256Base64,
 		Counter:                    tmp.Assertion.Counter,
 		Environment:                tmp.Assertion.Environment,
@@ -233,7 +231,7 @@ func (t *TestData) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func decodeB64(s string) []byte {
+func DecodeB64(s string) []byte {
 	data, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		panic(err)
@@ -241,19 +239,30 @@ func decodeB64(s string) []byte {
 	return data
 }
 
-func loadTestData() (*TestData, error) {
-	path := "testdata/attestdata.json"
-	if !fileExists(path) {
-		path = "testdata/ios-14.4.json"
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+func LoadTestData(files ...string) (*TestData, error) {
+	if len(files) == 0 {
+		files = []string{"testdata/attestdata.json", "testdata/ios-14.4.json"}
 	}
 
-	testData := TestData{}
-	err = json.Unmarshal(data, &testData)
-	if err != nil {
+	var data []byte
+	var err error
+
+	for _, file := range files {
+		if fileExists(file) {
+			data, err = os.ReadFile(file)
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
+	}
+
+	if data == nil {
+		return nil, fmt.Errorf("no test data file found among candidates: %v", files)
+	}
+
+	var testData TestData
+	if err = json.Unmarshal(data, &testData); err != nil {
 		return nil, err
 	}
 	return &testData, nil
