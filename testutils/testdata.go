@@ -1,4 +1,4 @@
-package attest
+package testutils
 
 import (
 	"encoding/base64"
@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	attest "github.com/takimoto3/app-attest"
 )
 
 type Attestation struct {
@@ -17,7 +19,7 @@ type Attestation struct {
 	BundleIdentifier string
 	ClientDataBase64 string
 	ClientDataHash   []byte
-	Environment      Environment
+	Environment      attest.Environment
 	ID               string
 	IOSVersion       float64
 	KeyId            []byte
@@ -155,14 +157,14 @@ func (t *TestData) UnmarshalJSON(b []byte) error {
 		return t
 	}
 
-	parseEnvironment := func(s string) Environment {
+	parseEnvironment := func(s string) attest.Environment {
 		switch s {
 		case "development", "sandbox":
-			return Sandbox
+			return attest.Sandbox
 		case "production":
-			return Production
+			return attest.Production
 		}
-		return None
+		return attest.None
 	}
 
 	// Attestation
@@ -241,7 +243,7 @@ func DecodeB64(s string) []byte {
 
 func LoadTestData(files ...string) (*TestData, error) {
 	if len(files) == 0 {
-		files = []string{"testdata/attestdata.json", "testdata/ios-14.4.json"}
+		files = []string{"testutils/testdata/attestdata.json", "testutils/testdata/ios-14.4.json"}
 	}
 
 	var data []byte
