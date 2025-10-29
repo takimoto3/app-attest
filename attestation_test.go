@@ -89,10 +89,7 @@ func TestAttestationService_Verify(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			target, err := attest.NewAttestationService(pool, tt.appID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			target := attest.NewAttestationService(pool, tt.appID)
 
 			attestObject := attest.AttestationObject{}
 			if err := attestObject.UnmarshalCBOR(tt.attestData); err != nil {
