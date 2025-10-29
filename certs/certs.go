@@ -2,7 +2,6 @@ package certs
 
 import (
 	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,22 +24,25 @@ func LoadCertFiles(paths ...string) (*x509.CertPool, error) {
 			}
 
 		case ".cer":
-			// Try to decode as PEM first
-			block, _ := pem.Decode(data)
-			if block != nil && block.Type == "CERTIFICATE" {
-				cert, err := x509.ParseCertificate(block.Bytes)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse PEM certificate %s: %w", path, err)
+			// Try PEM first
+			if ok := pool.AppendCertsFromPEM(data); ok {
+				continue
+			}
+			// Try multiple DER certs
+			certs, err := x509.ParseCertificates(data)
+			if err == nil && len(certs) > 0 {
+				for _, cert := range certs {
+					pool.AddCert(cert)
 				}
+				continue
+			}
+			// Try single DER cert
+			cert, err := x509.ParseCertificate(data)
+			if err == nil {
 				pool.AddCert(cert)
 				continue
 			}
-			// Fallback to DER
-			cert, err := x509.ParseCertificate(data)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse DER certificate %s: %w", path, err)
-			}
-			pool.AddCert(cert)
+			return nil, fmt.Errorf("no valid certificate found in %s (PEM or DER)", path)
 
 		default:
 			return nil, fmt.Errorf("unsupported file extension: %s. Expected .pem or .cer", path)
