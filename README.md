@@ -21,6 +21,8 @@ Generate a key pair and attestation in your app as specified in the [documentati
 
 Validate the attestation by calling:
 ```go
+import "github.com/takimoto3/app-attest/certs"
+
 var keyID = []byte(.....) // DCAppAttestService.generateKey returned value and base64.StdEncoding.DecodeString
 var challenge = []byte(.....) // one-time challenge from the server
 var clientDataHash = sha256.Sum256(challenge)
@@ -31,13 +33,16 @@ err := attestationObj.Unmarshal(attestation)
 if err != nil {
     // handle error...
 }
-service, err := attest.NewAttestationService(
-    "testdata/Apple_App_Attestation_Root_CA.pem", // Path to your root CA file
-    "<TEAM ID>.<Bundle ID>",                      // Your App ID
-)
+
+pool, err := certs.LoadCertFiles("testdata/Apple_App_Attestation_Root_CA.pem") // Path to your root CA file
 if err != nil {
     // handle error...
 }
+service := attest.NewAttestationService(
+    pool, // cert pool
+    "<TEAM ID>.<Bundle ID>",   // Your App ID
+)
+
 result, err := service.Verify(attestObject, clientDataHash[:], keyID)
 if err != nil {
     // handle error...
