@@ -62,8 +62,8 @@ type AttestationService struct {
 	AppID string
 }
 
-func NewAttestationService(pool *x509.CertPool, appID string) (*AttestationService, error) {
-	return &AttestationService{RootCertPool: pool, AppID: appID}, nil
+func NewAttestationService(pool *x509.CertPool, appID string) *AttestationService {
+	return &AttestationService{RootCertPool: pool, AppID: appID}
 }
 
 // Verify validate a single attestation object and return result object.
