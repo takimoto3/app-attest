@@ -6,9 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
-	"errors"
 	"fmt"
-	"os"
 
 	"github.com/takimoto3/app-attest/cbor"
 )
@@ -64,21 +62,8 @@ type AttestationService struct {
 	AppID string
 }
 
-func NewAttestationService(rootCAPath, appID string) (*AttestationService, error) {
-	pemData, err := os.ReadFile(rootCAPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read root CA file at %s: %w", rootCAPath, err)
-	}
-
-	pool := x509.NewCertPool()
-	if ok := pool.AppendCertsFromPEM(pemData); !ok {
-		return nil, errors.New("failed to parse any valid certificates from the provided PEM data")
-	}
-
-	return &AttestationService{
-		RootCertPool: pool,
-		AppID:        appID,
-	}, nil
+func NewAttestationService(pool *x509.CertPool, appID string) (*AttestationService, error) {
+	return &AttestationService{RootCertPool: pool, AppID: appID}, nil
 }
 
 // Verify validate a single attestation object and return result object.

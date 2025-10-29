@@ -243,7 +243,7 @@ func DecodeB64(s string) []byte {
 
 func LoadTestData(files ...string) (*TestData, error) {
 	if len(files) == 0 {
-		files = []string{"testutils/testdata/attestdata.json", "testutils/testdata/ios-14.4.json"}
+		files = []string{"testdata/attestdata.json", "testdata/ios-14.4.json"}
 	}
 
 	var data []byte

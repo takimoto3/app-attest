@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	attest "github.com/takimoto3/app-attest"
+	"github.com/takimoto3/app-attest/certs"
 	"github.com/takimoto3/app-attest/testutils"
 	"github.com/tenntenn/testtime"
 )
@@ -83,7 +84,12 @@ func TestAttestationService_Verify(t *testing.T) {
 				testtime.SetTime(t, testData.Attestation.ExpiredDate)
 			}
 
-			target, err := attest.NewAttestationService("testdata/Apple_App_Attestation_Root_CA.pem", tt.appID)
+			pool, err := certs.LoadCertFiles("testdata/Apple_App_Attestation_Root_CA.pem")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			target, err := attest.NewAttestationService(pool, tt.appID)
 			if err != nil {
 				t.Fatal(err)
 			}
