@@ -1,12 +1,16 @@
 # App-Attest
-[![](https://img.shields.io/badge/go-%3E%3D%201.23-blue)](#Installation)
+[![](https://img.shields.io/badge/go-%3E%3D%201.24-blue)](#Installation)
 
 App-Attest is a Go package that implements the server-side validation of both attestations and assertions that can be obtained using the [DCAppAttestService](https://developer.apple.com/documentation/devicecheck/dcappattestservice).
- * (NOT SUPPORT) Request and analyze risk data from server-to-server calls using recipes
+
+## Features
+* Validate attestations
+* Validate assertions
+* Assess fraud risk by requesting and analyzing risk data from Apple's servers
 
 ## System Requirements
 
-* Go 1.23 (or newer)
+* Go 1.24 (or newer)
 
 ## Installation
 ```sh
@@ -60,7 +64,7 @@ If the attestation is successful, your app will create and validate the assertio
 Verify the assertion by calling:
 ```go
 var challenge = []byte(....) // one-time challenge from the server
-var cliendData = []byte("{..., "challenge":"<challenge data>", .....}") // client request(JSON data case)
+var cliendData = []byte("{..., \"challenge\":\"<challenge data>\", .....}") // client request(JSON data case)
 var assertion = []byte(....) // DCAppAttestService.generateAssertion returned value
 
 assertionObj := &attest.AssertionObject{}
@@ -81,6 +85,87 @@ if err != nil {
 }
 ```
 If the assertion is successful, get a new counter and save it.
+
+### Assessing Fraud Risk
+
+You can assess the risk of fraud by requesting a new receipt from Apple's servers, which contains a risk metric. This metric indicates the number of attestations for your app on a particular device.
+
+The following example shows how to use `fraud.Client` to get a new receipt and `receipt.ReceiptVerifier` to parse and validate it.
+
+```go
+import (
+    "context"
+    "crypto/x509"
+    "errors"
+    "fmt"
+    "log"
+
+    "github.com/takimoto3/app-attest/certs"
+    "github.com/takimoto3/app-attest/fraud"
+    "github.com/takimoto3/app-attest/fraud/receipt"
+    "github.com/takimoto3/appleapi-core/token"
+)
+
+func main() {
+    // The receipt from the initial attestation, which you should have stored.
+    var initialReceipt []byte
+
+    // ---" Prerequisites ---
+    // You need a token.Provider for JWT authentication.
+    // Load your private key from a .p8 file.
+    privKey, err := token.LoadPKCS8File("<PATH_TO_YOUR_AUTHKEY.P8>") // e.g., "certs/AuthKey.p8"
+    if err != nil {
+        log.Fatalf("Failed to load private key: %v", err)
+    }
+    // Create a new token provider with your Key ID, Team ID, and private key.
+    tokenProvider := token.NewProvider("<YOUR_KEY_ID>", "<YOUR_TEAM_ID>", privKey)
+    
+    // ---" 1. Create clients ---
+    // Create a fraud client.
+    fraudClient, err := fraud.NewClient(tokenProvider)
+    if err != nil {
+        log.Fatalf("Failed to create fraud client: %v", err)
+    }
+
+    // Create a receipt verifier with Apple's root CA.
+    rootCAPool, err := certs.LoadCertFiles("testdata/Apple_App_Attestation_Root_CA.pem")
+    if err != nil {
+        log.Fatalf("Failed to load root CA: %v", err)
+    }
+    receiptVerifier := receipt.NewReceiptVerifier(rootCAPool)
+
+    // ---" 2. Request a new receipt from Apple ---
+    // The fraud.Client handles the HTTP POST to Apple's server.
+    newReceiptBytes, err := fraudClient.Post(context.Background(), initialReceipt)
+    if err != nil {
+        // Handle specific cases like "Not Modified".
+        if errors.Is(err, fraud.ErrNotModified) {
+            log.Println("Receipt not modified. Risk metric not updated.")
+            // This is not a fatal error. You can continue with the old receipt.
+            return 
+        }
+        // Handle other potential errors (e.g., network issues, invalid token).
+        log.Fatalf("Failed to get new receipt from Apple: %v", err)
+    }
+
+    // ---" 3. Parse and verify the new receipt ---
+    // Use the receipt verifier to parse the returned PKCS#7 container.
+    verifiedReceipt, err := receiptVerifier.ParseAndVerify(newReceiptBytes.Receipt)
+    if err != nil {
+        log.Fatalf("Failed to parse and verify new receipt: %v", err)
+    }
+
+    // ---" 4. Use the risk metric ---
+    // Now you can access the risk metric.
+    fmt.Printf("Successfully verified new receipt.\n")
+    fmt.Printf("Risk Metric: %d\n", verifiedReceipt.RiskMetric)
+    fmt.Printf("Receipt Type: %s\n", verifiedReceipt.Type)
+    fmt.Printf("Creation Time: %v\n", verifiedReceipt.CreationTime)
+
+    // You should now store the new receipt (`newReceiptBytes.Receipt`) 
+    // to use it for the next refresh.
+}
+```
 
 ## Testing
 
@@ -178,14 +263,7 @@ func generate() async throws {
 
 I referred to [appattest](https://github.com/bas-d/appattest) by Bas Doorn when creating this library. Their work was a valuable reference.
 
-
-## Third-Party Attributions
-
-This project uses `github.com/google/go-cmp` for comparing Go values in tests, which is licensed under the BSD 3-Clause License.
-
 Test data used in this project is from [veehaitch/devicecheck-appattest](https://github.com/veehaitch/devicecheck-appattest), which is licensed under the Apache License 2.0.
-
-This project uses `github.com/tenntenn/testtime` for time manipulation in tests, which is licensed under the BSD 3-Clause License.
 
 ## License
 App-Attest is available under the MIT license. See the LICENSE file for more info.
