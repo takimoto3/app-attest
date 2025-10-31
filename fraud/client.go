@@ -75,7 +75,7 @@ type Response struct {
 // The host is automatically set to the development or production endpoint
 // based on the configuration of the underlying appleapi.Client.
 func NewClient(tp token.Provider, opts ...appleapi.Option) (*Client, error) {
-	c, err := appleapi.NewClient(ProductionHost, tp, opts...)
+	c, err := appleapi.NewClient(appleapi.DefaultHTTPClientInitializer(), ProductionHost, tp, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -99,12 +99,12 @@ func NewClient(tp token.Provider, opts ...appleapi.Option) (*Client, error) {
 //   - ErrTooManyRequests (429)
 //   - ErrServerError (500)
 //   - ErrServiceUnavailable (503)
-func (c *Client) Post(ctx context.Context, receipt []byte) (*Response, error) {
+func (c *Client) Do(ctx context.Context, receipt []byte) (*Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Host+Path, bytes.NewBuffer(receipt))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	resp, err := c.Do(req)
+	resp, err := c.Client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to perform attestation request: %w", err)
 	}

@@ -161,7 +161,7 @@ func TestClient_Post(t *testing.T) {
 			}
 
 			c.Host = server.URL
-			resp, err := c.Post(context.Background(), tt.input)
+			resp, err := c.Do(context.Background(), tt.input)
 
 			if tt.wantErr != nil {
 				if err == nil || err.Error() != tt.wantErr.Error() {
