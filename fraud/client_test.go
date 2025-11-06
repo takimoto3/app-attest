@@ -159,11 +159,11 @@ func TestClient_Post(t *testing.T) {
 				t.Fatalf("failed to create client: %v", err)
 			}
 
-			if c.Host != tt.wantHost {
-				t.Errorf("expected Host %q, got %q", tt.wantHost, c.Host)
+			if c.GetHost() != tt.wantHost {
+				t.Errorf("expected Host %q, got %q", tt.wantHost, c.GetHost())
 			}
 
-			c.Host = server.URL
+			c.SetHost(server.URL)
 			resp, err := c.Do(context.Background(), tt.input)
 
 			if tt.wantErr != nil {
