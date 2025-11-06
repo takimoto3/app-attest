@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ func (m *mockToken) SetLogger(l *slog.Logger) {
 }
 
 func TestClient_Post(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	tests := []struct {
 		name       string
 		statusCode int
@@ -150,6 +152,7 @@ func TestClient_Post(t *testing.T) {
 				w.Write([]byte(tt.body))
 			}))
 			defer server.Close()
+			tt.opts = append(tt.opts, appleapi.WithLogger(logger))
 
 			c, err := fraud.NewClient(&mockToken{}, tt.opts...)
 			if err != nil {

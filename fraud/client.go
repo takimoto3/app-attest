@@ -102,55 +102,89 @@ func NewClient(tp token.Provider, opts ...appleapi.Option) (*Client, error) {
 func (c *Client) Do(ctx context.Context, receipt []byte) (*Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Host+Path, bytes.NewBuffer(receipt))
 	if err != nil {
+		c.Logger.Error("failed to create AppAttest request", "error", err)
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	resp, err := c.Client.Do(req)
 	if err != nil {
+		c.Logger.Error("failed to perform AppAttest request", "error", err)
 		return nil, fmt.Errorf("failed to perform attestation request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	return handleResponse(resp)
+	return c.handleResponse(resp)
 }
 
 // handleResponse interprets the HTTP response from Apple's App Attest service
 // and maps status codes to predefined error values.
-func handleResponse(resp *http.Response) (*Response, error) {
+func (c *Client) handleResponse(resp *http.Response) (*Response, error) {
 	bodyData, err := io.ReadAll(resp.Body)
 	if err != nil {
+		c.Logger.Error("failed to read AppAttest response body",
+			"status", resp.StatusCode,
+			"error", err,
+		)
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	body := strings.TrimSpace(string(bodyData))
+
+	c.Logger.Debug("AppAttest response received",
+		"status", resp.StatusCode,
+		"body", body,
+	)
+
 	switch resp.StatusCode {
 	case 200:
 		receipt, err := base64.StdEncoding.DecodeString(body)
 		if err != nil {
+			c.Logger.Warn("invalid base64 in AppAttest response", "error", err)
 			return nil, fmt.Errorf("failed to decode base64 receipt from response body: %w", err)
 		}
 		return &Response{receipt}, nil
+
 	case 304:
+		c.Logger.Info("AppAttest not modified", "status", 304)
 		return nil, ErrNotModified
+
 	case 400:
 		switch {
 		case strings.Contains(body, "Incorrect Environment"):
+			c.Logger.Warn("incorrect environment", "status", 400)
 			return nil, ErrIncorrectEnvironment
 		case strings.Contains(body, "Bad Payload"):
+			c.Logger.Warn("bad payload", "status", 400)
 			return nil, ErrBadPayload
 		default:
+			c.Logger.Warn("bad request", "status", 400, "body", body)
 			return nil, fmt.Errorf("bad request: %s", body)
 		}
+
 	case 401:
+		c.Logger.Warn("unauthorized AppAttest request", "status", 401)
 		return nil, ErrUnauthorized
+
 	case 404:
+		c.Logger.Info("no data found for AppAttest receipt", "status", 404)
 		return nil, ErrNoDataFound
+
 	case 429:
+		c.Logger.Warn("too many AppAttest requests", "status", 429)
 		return nil, ErrTooManyRequests
+
 	case 500:
+		c.Logger.Error("AppAttest server error", "status", 500)
 		return nil, ErrServerError
+
 	case 503:
+		c.Logger.Error("AppAttest service unavailable", "status", 503)
 		return nil, ErrServiceUnavailable
+
 	default:
+		c.Logger.Error("unexpected AppAttest response",
+			"status", resp.StatusCode,
+			"body", body,
+		)
 		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode, body)
 	}
 }
