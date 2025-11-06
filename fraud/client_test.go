@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func (m *mockToken) GetToken(_ time.Time) (string, error) {
 func (m *mockToken) SetLogger(l *slog.Logger) {
 }
 
-func TestClient_Post(t *testing.T) {
+func TestClient_Do(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	tests := []struct {
 		name       string
@@ -147,6 +148,10 @@ func TestClient_Post(t *testing.T) {
 				b, _ := io.ReadAll(r.Body)
 				if !bytes.Equal(b, tt.input) {
 					t.Errorf("expected request body %q, got %q", tt.input, b)
+				}
+				authHeader := r.Header.Get("Authorization")
+				if strings.ToLower(authHeader) != "bearer dummy" {
+					t.Errorf("expected auth header %q, got %q", "Bearer dummy", authHeader)
 				}
 				w.WriteHeader(tt.statusCode)
 				w.Write([]byte(tt.body))
