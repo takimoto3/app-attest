@@ -78,6 +78,10 @@ func NewClient(tp token.Provider, opts ...appleapi.Option) (*Client, error) {
 	return NewClientFromInitializer(appleapi.DefaultHTTPClientInitializer(), tp, opts...)
 }
 
+// NewClientFromInitializer returns a new Client instance for the App Attest API
+// with a custom HTTPClientInitializer.
+// The host is automatically set to the development or production endpoint
+// based on the configuration of the underlying appleapi.Client.
 func NewClientFromInitializer(initializer appleapi.HTTPClientInitializer, tp token.Provider, opts ...appleapi.Option) (*Client, error) {
 	c, err := appleapi.NewClient(initializer, ProductionHost, tp, opts...)
 	if err != nil {
