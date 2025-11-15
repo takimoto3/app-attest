@@ -75,7 +75,11 @@ type Response struct {
 // The host is automatically set to the development or production endpoint
 // based on the configuration of the underlying appleapi.Client.
 func NewClient(tp token.Provider, opts ...appleapi.Option) (*Client, error) {
-	c, err := appleapi.NewClient(appleapi.DefaultHTTPClientInitializer(), ProductionHost, tp, opts...)
+	return NewClientFromInitializer(appleapi.DefaultHTTPClientInitializer(), tp, opts...)
+}
+
+func NewClientFromInitializer(initializer appleapi.HTTPClientInitializer, tp token.Provider, opts ...appleapi.Option) (*Client, error) {
+	c, err := appleapi.NewClient(initializer, ProductionHost, tp, opts...)
 	if err != nil {
 		return nil, err
 	}
