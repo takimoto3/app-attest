@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"unsafe"
 )
 
 // MajorType represents the top 3 bits of a CBOR data item.
@@ -137,4 +138,15 @@ func (d *Decoder) ReadTextString(ai byte) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// ReadUnsafeTextString reads a CBOR UTF-8 text string (major type 3).
+// Internally, it reuses ReadByteString and returns a string without copying.
+// The returned string aliases the underlying data.
+func (d *Decoder) ReadUnsafeTextString(ai byte) (string, error) {
+	b, err := d.ReadByteString(ai)
+	if err != nil {
+		return "", err
+	}
+	return unsafe.String(unsafe.SliceData(b), len(b)), nil
 }
