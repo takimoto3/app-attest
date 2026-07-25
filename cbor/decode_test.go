@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"testing"
+	"unsafe"
 )
 
 func TestDecodeInt(t *testing.T) {
@@ -99,6 +100,51 @@ func TestDecodeTextString(t *testing.T) {
 	}
 }
 
+func TestDecodeUnsafeTextString(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"short text", []byte{0x63, 'f', 'o', 'o'}, "foo"},
+		{"1 byte len", []byte{0x78, 0x05, 'h', 'e', 'l', 'l', 'o'}, "hello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := NewDecoder(tt.data)
+			_, ai, err := dec.ReadHeader()
+			if err != nil {
+				t.Fatalf("ReadHeader error: %v", err)
+			}
+
+			got, err := dec.ReadUnsafeTextString(ai)
+			if err != nil {
+				t.Fatalf("ReadUnsafeTextString error: %v", err)
+			}
+
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeUnsafeTextStringAliasesBuffer(t *testing.T) {
+	data := []byte{0x63, 'f', 'o', 'o'}
+
+	dec := NewDecoder(data)
+	_, ai, _ := dec.ReadHeader()
+
+	offset := dec.pos // ReadByteStringが読む直前の位置
+
+	got, _ := dec.ReadUnsafeTextString(ai)
+
+	if unsafe.StringData(got) != &data[offset] {
+		t.Fatal("string does not alias backing buffer")
+	}
+}
+
 var benchIntSmall = []byte{0x0a}             // 10
 var benchIntAdd24 = []byte{0x18, 0x64}       // 100
 var benchIntAdd25 = []byte{0x19, 0x01, 0x2c} // 300
@@ -154,6 +200,8 @@ func BenchmarkDecodeByteStringLong(b *testing.B) {
 	}
 }
 
+var sink string
+
 func BenchmarkDecodeTextString(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		dec := NewDecoder(benchTextData)
@@ -161,7 +209,7 @@ func BenchmarkDecodeTextString(b *testing.B) {
 		if mt != TextString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		_, _ = dec.ReadTextString(ai)
+		sink, _ = dec.ReadTextString(ai)
 	}
 }
 
@@ -172,6 +220,22 @@ func BenchmarkDecodeTextStringLong(b *testing.B) {
 		if mt != TextString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		_, _ = dec.ReadTextString(ai)
+		sink, _ = dec.ReadTextString(ai)
+	}
+}
+
+func BenchmarkDecodeUnsafeTextString(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		dec := NewDecoder(benchTextData)
+		_, ai, _ := dec.ReadHeader()
+		sink, _ = dec.ReadUnsafeTextString(ai)
+	}
+}
+
+func BenchmarkDecodeUnsafeTextStringLong(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		dec := NewDecoder(benchTextDataLong)
+		_, ai, _ := dec.ReadHeader()
+		sink, _ = dec.ReadUnsafeTextString(ai)
 	}
 }

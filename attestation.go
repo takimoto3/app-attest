@@ -227,7 +227,7 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 		if mt != cbor.TextString {
 			return fmt.Errorf("cbor: expected textstring for map key got %v", mt)
 		}
-		key, err := dec.ReadTextString(ai)
+		key, err := dec.ReadUnsafeTextString(ai)
 		if err != nil {
 			return err
 		}
@@ -290,7 +290,7 @@ func (as *AttStmt) UnmarshalCBOR(dec *cbor.Decoder) error {
 		if mt != cbor.TextString {
 			return fmt.Errorf("cbor: expected textstring for attStmt map key got %v", mt)
 		}
-		key, err := dec.ReadTextString(ai)
+		key, err := dec.ReadUnsafeTextString(ai)
 		if err != nil {
 			return err
 		}
