@@ -90,7 +90,7 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 	// 1. Verify that the x5c array contains the intermediate and leaf certificates for App Attest,
 	//  starting from the credential certificate in the first data buffer in the array (credcert).
 	//  Verify the validity of the certificates using Apple’s App Attest root certificate.
-	_, err = credCert.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates})
+	err = verifyCredentialCertificate(credCert, roots, intermediates)
 	if err != nil {
 		return nil, fmt.Errorf("invalid certificate: %w", err)
 	}
@@ -173,6 +173,18 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 	}
 
 	return &Result{Receipt: receipt, PublicKey: pubkey, Environment: env}, nil
+}
+
+// verifyCredentialCertificate verifies an App Attest credential chain without applying
+// crypto/x509's default TLS ServerAuth extended-key-usage policy. App Attest credential
+// certificates are attestation credentials, not TLS server certificates.
+func verifyCredentialCertificate(credential *x509.Certificate, roots, intermediates *x509.CertPool) error {
+	_, err := credential.Verify(x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	})
+	return err
 }
 
 // MarshalUncompressed encodes an ECDSA public key into the uncompressed form.
