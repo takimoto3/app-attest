@@ -16,7 +16,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26.5'
+        go-version: '1.26.6'
 
     - name: Install testtime
       run: go install github.com/tenntenn/testtime/cmd/testtime@latest

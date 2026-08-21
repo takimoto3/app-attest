@@ -2,7 +2,7 @@ module github.com/takimoto3/app-attest
 
 go 1.25.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/google/go-cmp v0.7.0
