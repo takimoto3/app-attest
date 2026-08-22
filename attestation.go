@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
+	"errors"
 	"fmt"
 
 	"github.com/takimoto3/app-attest/cbor"
@@ -73,18 +74,19 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 	intermediates := x509.NewCertPool()
 
 	x5chain := attestObj.AttStmt.X5C
-	for _, chain := range x5chain {
-		cert, err := x509.ParseCertificate(chain)
-		if err != nil {
-			return nil, fmt.Errorf("parsing certificate from ASN.1 data failed: %w", err)
-		}
-		if cert.IsCA {
-			intermediates.AddCert(cert)
-		}
+	if len(x5chain) == 0 {
+		return nil, errors.New("x5c chain is empty")
 	}
 	credCert, err := x509.ParseCertificate(x5chain[0])
 	if err != nil {
 		return nil, fmt.Errorf("parsing certificate from ASN.1 data failed: %w", err)
+	}
+	for i, certDER := range x5chain[1:] {
+		cert, err := x509.ParseCertificate(certDER)
+		if err != nil {
+			return nil, fmt.Errorf("parsing intermediate certificate at index %d failed: %w", i+1, err)
+		}
+		intermediates.AddCert(cert)
 	}
 
 	// 1. Verify that the x5c array contains the intermediate and leaf certificates for App Attest,
