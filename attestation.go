@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
+	"encoding/base64"
 	"errors"
 	"fmt"
 
@@ -16,10 +17,26 @@ type Environment int
 
 // attestation envirom
 const (
-	None                   = 0
-	Sandbox    Environment = 1 // the App Attest sandbox environment.
-	Production Environment = 2 // The App Attest production environment.
+	None       Environment = iota
+	Sandbox                // the App Attest sandbox environment.
+	Production             // The App Attest production environment.
 )
+
+type Platform int
+
+// platform
+const (
+	iOS Platform = iota
+	macOS
+)
+
+var expectedACLBlob = func() []byte {
+	val, err := base64.StdEncoding.DecodeString("MEAMAjExMDowCQwCb2uhAwEB/zAJDAJvYaEDAQH/MAsMBG9kZWyhAwEB/zAVDARvc2duoAYMBHJzZWMwBaYDAgEB")
+	if err != nil {
+		panic(err)
+	}
+	return val
+}()
 
 func (e Environment) String() string {
 	switch e {
@@ -69,13 +86,23 @@ func NewAttestationService(pool *x509.CertPool, appID string) *AttestationServic
 
 // Verify validate a single attestation object and return result object.
 func (service *AttestationService) Verify(attestObj *AttestationObject, clientDataHash, keyID []byte) (*Result, error) {
+	return service.verify(iOS, attestObj, clientDataHash, keyID)
+}
+
+func (service *AttestationService) verify(platform Platform, attestObj *AttestationObject, clientDataHash, keyID []byte) (*Result, error) {
+	if attestObj.Format != "apple-appattest" {
+		return nil, fmt.Errorf("invalid attestation format: %q", attestObj.Format)
+	}
 	receipt := attestObj.AttStmt.Receipt
+	if len(receipt) == 0 {
+		return nil, fmt.Errorf("invalid attestation: missing receipt")
+	}
 	roots := service.RootCertPool.Clone()
 	intermediates := x509.NewCertPool()
 
 	x5chain := attestObj.AttStmt.X5C
-	if len(x5chain) == 0 {
-		return nil, errors.New("x5c chain is empty")
+	if len(x5chain) < 2 {
+		return nil, errors.New("x5c chain must contain credential and intermediate certificates")
 	}
 	credCert, err := x509.ParseCertificate(x5chain[0])
 	if err != nil {
@@ -100,30 +127,69 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 	// 2. Create clientDataHash as the SHA256 hash of the one-time challenge sent to your app before performing the attestation,
 	//  and append that hash to the end of the authenticator data (authData from the decoded object).
 	// 3. Generate a new SHA256 hash of the composite item to create nonce.
-	nonce := sha256.Sum256(append(attestObj.AuthData, clientDataHash...))
+	hash := sha256.New()
+	hash.Write(attestObj.AuthData)
+	hash.Write(clientDataHash)
+	nonce := hash.Sum(nil)
 
 	// 4. Obtain the value of the credCert extension with OID 1.2.840.113635.100.8.2, which is a DER-encoded ASN.1 sequence.
 	//  Decode the sequence and extract the single octet string that it contains. Verify that the string equals nonce.
 	credCertOID := asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 2}
-	var credCertId []byte
+	var credCertExtension []byte
+	aclBlobOID := asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 6}
+	var aclBlobExtension []byte
 	for _, ext := range credCert.Extensions {
 		if ext.Id.Equal(credCertOID) {
-			credCertId = ext.Value
+			credCertExtension = ext.Value
+		}
+		if ext.Id.Equal(aclBlobOID) {
+			aclBlobExtension = ext.Value
 		}
 	}
-	if len(credCertId) <= 0 {
+	if len(credCertExtension) == 0 {
 		return nil, fmt.Errorf("certificate didn't contain credCert extension")
 	}
-	var certOctet []asn1.RawValue
-	if _, err = asn1.Unmarshal(credCertId, &certOctet); err != nil {
-		return nil, fmt.Errorf("credCertId parse error: %w", err)
+	var sequence []asn1.RawValue
+	if _, err = asn1.Unmarshal(credCertExtension, &sequence); err != nil {
+		return nil, fmt.Errorf("credCert extension parse error: %w", err)
 	}
-	var cert asn1.RawValue
-	if _, err = asn1.Unmarshal(certOctet[0].Bytes, &cert); err != nil {
-		return nil, fmt.Errorf("certOctet parse error: %w", err)
+	if len(sequence) != 1 {
+		return nil, fmt.Errorf("invalid credCert extension structure")
 	}
-	if !bytes.Equal(nonce[:], cert.Bytes) {
+	var octetString asn1.RawValue
+	if _, err = asn1.Unmarshal(sequence[0].Bytes, &octetString); err != nil {
+		return nil, fmt.Errorf("credCert extension value parse error: %w", err)
+	}
+	if octetString.Class != asn1.ClassUniversal || octetString.Tag != asn1.TagOctetString {
+		return nil, fmt.Errorf("invalid credCert extension value")
+	}
+	if !bytes.Equal(nonce, octetString.Bytes) {
 		return nil, fmt.Errorf("credCert extension does not match nonce")
+	}
+
+	// for macOS
+	if platform == macOS {
+		// aclBlob Extension
+		if len(aclBlobExtension) == 0 {
+			return nil, fmt.Errorf("certificate didn't contain aclBlob extension")
+		}
+		var sequence []asn1.RawValue
+		var octetString asn1.RawValue
+		if _, err = asn1.Unmarshal(aclBlobExtension, &sequence); err != nil {
+			return nil, fmt.Errorf("aclBlob extension parse error: %w", err)
+		}
+		if len(sequence) != 1 {
+			return nil, fmt.Errorf("invalid aclBlob extension structure")
+		}
+		if _, err = asn1.Unmarshal(sequence[0].Bytes, &octetString); err != nil {
+			return nil, fmt.Errorf("aclBlob extension value parse error: %w", err)
+		}
+		if octetString.Class != asn1.ClassUniversal || octetString.Tag != asn1.TagOctetString {
+			return nil, fmt.Errorf("invalid aclBlob extension value")
+		}
+		if !bytes.Equal(expectedACLBlob, octetString.Bytes) {
+			return nil, fmt.Errorf("aclBlob does not match expected value")
+		}
 	}
 
 	// 5. Create the SHA256 hash of the public key in credCert, and verify that it matches the key identifier from your app.
@@ -131,7 +197,11 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 	if !ok {
 		return nil, fmt.Errorf("invalid key algorithm")
 	}
-	pubkeyHash := sha256.Sum256(MarshalUncompressed(pubkey))
+	pubkeyBytes, err := pubkey.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("invalid ecdsa public key: %w", err)
+	}
+	pubkeyHash := sha256.Sum256(pubkeyBytes)
 	if !bytes.Equal(pubkeyHash[:], keyID) {
 		return nil, fmt.Errorf("the keyid is not match public key's hash")
 	}
@@ -158,12 +228,12 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 
 	// 8. Verify that the authenticator data’s aaguid field is either appattestdevelop if operating in the development environment,
 	//  or appattest followed by seven 0x00 bytes if operating in the production environment.
-	aaguid := string(bytes.Trim(authData.CredentialData.AAGUID, "\x00"))
+	aaguid := string(authData.CredentialData.AAGUID)
 	var env Environment
 	switch aaguid {
-	case "appattest":
+	case "appattest\x00\x00\x00\x00\x00\x00\x00":
 		env = Production
-	case "appattestdevelop":
+	case "appattestdevelop", "appattestsandbox":
 		env = Sandbox
 	default:
 		return nil, fmt.Errorf("invalid aaguid value")
@@ -187,34 +257,6 @@ func verifyCredentialCertificate(credential *x509.Certificate, roots, intermedia
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 	})
 	return err
-}
-
-// MarshalUncompressed encodes an ECDSA public key into the uncompressed form.
-//
-// This function produces the same output as the deprecated elliptic.Marshal()
-// function, without triggering deprecation warnings in Go 1.21+.
-//
-// The returned byte slice has the following structure:
-//
-//	0x04 || X || Y
-//
-// where:
-//   - 0x04 indicates the "uncompressed" point format as defined in SEC 1,
-//   - X and Y are the big-endian, zero-padded coordinates of the public key,
-//     each with a length equal to (curve.BitSize + 7) / 8.
-//
-// This representation is commonly used in cryptographic protocols such as
-// Apple's App Attest service and WebAuthn when computing a SHA-256 hash
-// over a raw ECDSA public key.
-func MarshalUncompressed(pub *ecdsa.PublicKey) []byte {
-	byteLen := (pub.Curve.Params().BitSize + 7) >> 3
-	x := pub.X.FillBytes(make([]byte, byteLen))
-	y := pub.Y.FillBytes(make([]byte, byteLen))
-	data := make([]byte, 1+2*byteLen)
-	data[0] = 0x04 // Uncompressed point indicator
-	copy(data[1:1+byteLen], x)
-	copy(data[1+byteLen:], y)
-	return data
 }
 
 // UnmarshalCBOR decodes CBOR data into the AttestationObject.
