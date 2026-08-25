@@ -34,7 +34,10 @@ func (service *AssertionService) Verify(assertObject *AssertionObject, challenge
 	clientDataHash := sha256.Sum256(clientData)
 
 	// 2. Concatenate authenticatorData and clientDataHash, and apply a SHA256 hash over the result to form nonce.
-	nonce := sha256.Sum256(append(assertObject.AuthData, clientDataHash[:]...))
+	hash := sha256.New()
+	hash.Write(assertObject.AuthData)
+	hash.Write(clientDataHash[:])
+	nonce := hash.Sum(nil)
 
 	// 3. Use the public key that you store from the attestation object to verify that the assertion’s signature is valid for nonce.
 	nonceHash := sha256.Sum256(nonce[:])
