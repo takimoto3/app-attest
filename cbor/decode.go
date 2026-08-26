@@ -2,9 +2,20 @@ package cbor
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"math"
+	"unicode/utf8"
 	"unsafe"
+)
+
+var (
+	ErrTooLarge                  = errors.New("cbor: data length exceeds buffer bounds")
+	ErrIntegerOverflow           = errors.New("cbor: integer overflow")
+	ErrInvalidString             = errors.New("cbor: invalid UTF-8 text string")
+	ErrInvalidIntType            = errors.New("cbor: expected int type")
+	ErrUnsupportedAdditionalInfo = errors.New("cbor: unsupported additional info")
 )
 
 // MajorType represents the top 3 bits of a CBOR data item.
@@ -19,6 +30,8 @@ const (
 	TextString  MajorType = 3 // Text string (UTF-8)
 	Array       MajorType = 4 // Array of elements
 	Map         MajorType = 5 // Map of key/value pairs
+	Tag         MajorType = 6 // Semantic tag (metadata)
+	SimpleFloat MajorType = 7 // Simple values / Floating-point numbers
 )
 
 // Decoder is a lightweight, zero-allocation CBOR decoder.
@@ -38,12 +51,17 @@ func NewDecoder(data []byte) *Decoder {
 // readN returns the next n bytes from the input buffer.
 // If insufficient data remains, io.ErrUnexpectedEOF is returned.
 func (d *Decoder) readN(n int) ([]byte, error) {
-	if d.pos+n > len(d.data) {
-		return nil, io.ErrUnexpectedEOF
+	if n < 0 || n > len(d.data)-d.pos {
+		return nil, ErrTooLarge
 	}
 	b := d.data[d.pos : d.pos+n]
 	d.pos += n
 	return b, nil
+}
+
+// Len returns the number of unread bytes remaining in the input buffer.
+func (d *Decoder) Len() int {
+	return len(d.data) - d.pos
 }
 
 // ReadHeader reads the next CBOR header byte and returns its major type and additional info.
@@ -92,7 +110,7 @@ func (d *Decoder) ReadAdditional(ai byte) (uint64, error) {
 		}
 		return binary.BigEndian.Uint64(b), nil
 	default:
-		return 0, fmt.Errorf("unsupported additional info: %d", ai)
+		return 0, fmt.Errorf("%w: %d", ErrUnsupportedAdditionalInfo, ai)
 	}
 }
 
@@ -100,18 +118,22 @@ func (d *Decoder) ReadAdditional(ai byte) (uint64, error) {
 // The caller must pass the major type (0 or 1) and its additional info value.
 // Returns the decoded integer as int64.
 func (d *Decoder) ReadInt(mt MajorType, ai byte) (int64, error) {
-	n, err := d.ReadAdditional(ai)
-	if err != nil {
-		return 0, err
+	if mt == UnsignedInt || mt == NegativeInt {
+		n, err := d.ReadAdditional(ai)
+		if err != nil {
+			return 0, err
+		}
+		if n > math.MaxInt64 {
+			return 0, ErrIntegerOverflow
+		}
+		switch mt {
+		case UnsignedInt:
+			return int64(n), nil
+		case NegativeInt:
+			return -1 - int64(n), nil
+		}
 	}
-	switch mt {
-	case UnsignedInt:
-		return int64(n), nil
-	case NegativeInt:
-		return -1 - int64(n), nil
-	default:
-		return 0, fmt.Errorf("expected int type")
-	}
+	return 0, ErrInvalidIntType
 }
 
 // ReadByteString reads a CBOR byte string (major type 2).
@@ -137,6 +159,9 @@ func (d *Decoder) ReadTextString(ai byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if !utf8.Valid(b) {
+		return "", ErrInvalidString
+	}
 	return string(b), nil
 }
 
@@ -147,6 +172,9 @@ func (d *Decoder) ReadUnsafeTextString(ai byte) (string, error) {
 	b, err := d.ReadByteString(ai)
 	if err != nil {
 		return "", err
+	}
+	if !utf8.Valid(b) {
+		return "", ErrInvalidString
 	}
 	return unsafe.String(unsafe.SliceData(b), len(b)), nil
 }
