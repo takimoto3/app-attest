@@ -165,7 +165,7 @@ func BenchmarkAttestationObject_UnmarshalCBOR_Op(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		var ao attest.AttestationObject
 		if err := ao.UnmarshalCBOR(data); err != nil {
 			b.Fatal(err)
