@@ -43,19 +43,22 @@ type Decoder struct {
 }
 
 // NewDecoder creates a new Decoder instance for the given CBOR-encoded data.
-// The provided byte slice is not copied and must remain valid for the lifetime of the Decoder.
+// The provided byte slice is not copied and must remain valid for the
+// lifetime of the Decoder (see ReadUnsafeTextString).
 func NewDecoder(data []byte) *Decoder {
 	return &Decoder{data: data}
 }
 
 // readN returns the next n bytes from the input buffer.
 // If insufficient data remains, io.ErrUnexpectedEOF is returned.
-func (d *Decoder) readN(n int) ([]byte, error) {
-	if n < 0 || n > len(d.data)-d.pos {
+func (d *Decoder) readN(n uint64) ([]byte, error) {
+	remaining := uint64(len(d.data) - d.pos)
+	if n > remaining {
 		return nil, ErrTooLarge
 	}
-	b := d.data[d.pos : d.pos+n]
-	d.pos += n
+	ni := int(n)
+	b := d.data[d.pos : d.pos+ni]
+	d.pos += ni
 	return b, nil
 }
 
@@ -136,6 +139,19 @@ func (d *Decoder) ReadInt(mt MajorType, ai byte) (int64, error) {
 	return 0, ErrInvalidIntType
 }
 
+// ReadUint32 reads a CBOR unsigned integer value and returns it as uint32.
+// Returns ErrIntegerOverflow if the value exceeds math.MaxUint32.
+func (d *Decoder) ReadUint32(ai byte) (uint32, error) {
+	n, err := d.ReadAdditional(ai)
+	if err != nil {
+		return 0, err
+	}
+	if n > math.MaxUint32 {
+		return 0, ErrIntegerOverflow
+	}
+	return uint32(n), nil
+}
+
 // ReadByteString reads a CBOR byte string (major type 2).
 // The AI value specifies the length or provides information to read it.
 // Returns a slice referencing the underlying data without copying.
@@ -144,7 +160,7 @@ func (d *Decoder) ReadByteString(ai byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	b, err := d.readN(int(length))
+	b, err := d.readN(length)
 	if err != nil {
 		return nil, err
 	}
@@ -166,8 +182,9 @@ func (d *Decoder) ReadTextString(ai byte) (string, error) {
 }
 
 // ReadUnsafeTextString reads a CBOR UTF-8 text string (major type 3).
-// Internally, it reuses ReadByteString and returns a string without copying.
-// The returned string aliases the underlying data.
+// The returned string aliases the underlying data and must not outlive it,
+// nor should the data be mutated while the string is in use. Use
+// ReadTextString if that's a problem.
 func (d *Decoder) ReadUnsafeTextString(ai byte) (string, error) {
 	b, err := d.ReadByteString(ai)
 	if err != nil {

@@ -75,54 +75,56 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 	dec := cbor.NewDecoder(data)
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read CBOR map header: %w", err)
 	}
 	if mt != cbor.Map {
-		return fmt.Errorf("cbor: expected map for AssertionObject got %v", mt)
+		return fmt.Errorf("expected CBOR type Map (major type 5) for AssertionObject, got major type %d", mt)
 	}
 	size, err := dec.ReadAdditional(ai)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read CBOR map size: %w", err)
 	}
-	for i := 0; i < int(size); i++ {
-		mt, ai, err := dec.ReadHeader()
+	for i := range size {
+		mt, ai, err = dec.ReadHeader()
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read map key header at index %d: %w", i, err)
 		}
 		if mt != cbor.TextString {
-			return fmt.Errorf("cbor: expected textstring for map key got %v", mt)
+			return fmt.Errorf("expected string map key at index %d, got major type %d", i, mt)
 		}
 		key, err := dec.ReadUnsafeTextString(ai)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read map key string at index %d: %w", i, err)
 		}
 		switch key {
 		case "signature":
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read map value header (key "signature") at index %d: %w`, i, err)
 			}
 			if mt != cbor.ByteString {
-				return fmt.Errorf("cbor: expected bytestring for \"signature\", got %v", mt)
+				return fmt.Errorf(`expected bytestring for signature (key "signature"), got major type %d`, mt)
 			}
 			val, err := dec.ReadByteString(ai)
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read signature bytes (key "signature"): %w`, err)
 			}
 			ao.Signature = val
 		case "authenticatorData":
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read map value header (key "authenticatorData") at index %d: %w`, i, err)
 			}
 			if mt != cbor.ByteString {
-				return fmt.Errorf("cbor: expected bytestring for \"authenticatorData\", got %v", mt)
+				return fmt.Errorf(`expected bytestring for authData (key "authenticatorData"), got major type %d`, mt)
 			}
 			val, err := dec.ReadByteString(ai)
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read authData bytes (key "authenticatorData"): %w`, err)
 			}
 			ao.AuthData = val
+		default:
+			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
 		}
 	}
 	return nil
