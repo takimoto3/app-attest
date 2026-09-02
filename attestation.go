@@ -13,13 +13,19 @@ import (
 	"github.com/takimoto3/app-attest/cbor"
 )
 
+// expectedACLBase64 is the expected access policy hash (aclBlob) for macOS App Attest keys
+// under SIP and Full Security mode (OID 1.2.840.113635.100.8.6).
+//
+// Ref: https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server
+const expectedACLBase64 = "MEAMAjExMDowCQwCb2uhAwEB/zAJDAJvYaEDAQH/MAsMBG9kZWyhAwEB/zAVDARvc2duoAYMBHJzZWMwBaYDAgEB"
+
 type Environment int
 
 // attestation envirom
 const (
-	None       Environment = iota
-	Sandbox                // the App Attest sandbox environment.
-	Production             // The App Attest production environment.
+	None        Environment = iota
+	Sandbox                 // the App Attest sandbox environment.
+	Production              // The App Attest production environment.
 )
 
 type Platform int
@@ -29,14 +35,6 @@ const (
 	iOS Platform = iota
 	macOS
 )
-
-var expectedACLBlob = func() []byte {
-	val, err := base64.StdEncoding.DecodeString("MEAMAjExMDowCQwCb2uhAwEB/zAJDAJvYaEDAQH/MAsMBG9kZWyhAwEB/zAVDARvc2duoAYMBHJzZWMwBaYDAgEB")
-	if err != nil {
-		panic(err)
-	}
-	return val
-}()
 
 func (e Environment) String() string {
 	switch e {
@@ -67,9 +65,11 @@ type AttStmt struct {
 }
 
 type Result struct {
-	Environment Environment
-	Receipt     []byte
-	PublicKey   *ecdsa.PublicKey
+	Environment             Environment
+	Receipt                 []byte
+	PublicKey               *ecdsa.PublicKey
+	AppleBundleVersion      string
+	AppleValidationCategory ValidationCategory
 }
 
 type AttestationService struct {
@@ -78,10 +78,16 @@ type AttestationService struct {
 
 	// App Identifier (format: teamID + "." + bundleID)
 	AppID string
+
+	ExpectedACLBlob []byte
 }
 
 func NewAttestationService(pool *x509.CertPool, appID string) *AttestationService {
-	return &AttestationService{RootCertPool: pool, AppID: appID}
+	expectedACLBlob, err := base64.StdEncoding.DecodeString(expectedACLBase64)
+	if err != nil {
+		panic(err)
+	}
+	return &AttestationService{RootCertPool: pool, AppID: appID, ExpectedACLBlob: expectedACLBlob}
 }
 
 // Verify validate a single attestation object and return result object.
@@ -187,7 +193,7 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 		if octetString.Class != asn1.ClassUniversal || octetString.Tag != asn1.TagOctetString {
 			return nil, fmt.Errorf("invalid aclBlob extension value")
 		}
-		if !bytes.Equal(expectedACLBlob, octetString.Bytes) {
+		if !bytes.Equal(service.ExpectedACLBlob, octetString.Bytes) {
 			return nil, fmt.Errorf("aclBlob does not match expected value")
 		}
 	}
@@ -244,7 +250,13 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 		return nil, fmt.Errorf("credential ID did not equal the provided key identifier")
 	}
 
-	return &Result{Receipt: receipt, PublicKey: pubkey, Environment: env}, nil
+	return &Result{
+		Receipt:                 receipt,
+		PublicKey:               pubkey,
+		Environment:             env,
+		AppleBundleVersion:      authData.AppleBundleVersion,
+		AppleValidationCategory: ValidationCategory(authData.AppleValidationCategory),
+	}, nil
 }
 
 // verifyCredentialCertificate verifies an App Attest credential chain without applying
@@ -266,60 +278,62 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 	dec := cbor.NewDecoder(data)
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read CBOR map header: %w", err)
 	}
 	if mt != cbor.Map {
-		return fmt.Errorf("cbor: expected map for AttestationObject got %v", mt)
+		return fmt.Errorf("expected CBOR type Map (major type 5) for AttestationObject, got major type %d", mt)
 	}
 	size, err := dec.ReadAdditional(ai)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read CBOR map size: %w", err)
 	}
-	for i := 0; i < int(size); i++ {
-		mt, ai, err := dec.ReadHeader()
+	for i := range size {
+		mt, ai, err = dec.ReadHeader()
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read map key header at index %d: %w", i, err)
 		}
 		if mt != cbor.TextString {
-			return fmt.Errorf("cbor: expected textstring for map key got %v", mt)
+			return fmt.Errorf("expected string map key at index %d, got major type %d", i, mt)
 		}
 		key, err := dec.ReadUnsafeTextString(ai)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read map key string at index %d: %w", i, err)
 		}
 		switch key {
 		case "fmt":
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read map value header (key "fmt") at index %d: %w`, i, err)
 			}
 			if mt != cbor.TextString {
-				return fmt.Errorf("cbor: expected textstring for \"fmt\", got %v", mt)
+				return fmt.Errorf(`expected string for format (key "fmt"), got major type %d`, mt)
 			}
 			val, err := dec.ReadTextString(ai)
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read format string (key "fmt"): %w`, err)
 			}
 			ao.Format = val
 		case "authData":
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read map value header (key "authData") at index %d: %w`, i, err)
 			}
 			if mt != cbor.ByteString {
-				return fmt.Errorf("cbor: expected bytestring for \"authData\", got %v", mt)
+				return fmt.Errorf(`expected bytestring for authData (key "authData"), got major type %d`, mt)
 			}
 			val, err := dec.ReadByteString(ai)
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read authData bytes (key "authData"): %w`, err)
 			}
 			ao.AuthData = val
 		case "attStmt":
 			stmt := AttStmt{}
 			if err = stmt.UnmarshalCBOR(dec); err != nil {
-				return err
+				return fmt.Errorf(`failed to unmarshal attStmt (key "attStmt"): %w`, err)
 			}
 			ao.AttStmt = stmt
+		default:
+			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
 		}
 	}
 	return nil
@@ -329,69 +343,72 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 func (as *AttStmt) UnmarshalCBOR(dec *cbor.Decoder) error {
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read attStmt map header: %w", err)
 	}
 	if mt != cbor.Map {
-		return fmt.Errorf("cbor: expected map for \"attStmt\", got %v", mt)
+		return fmt.Errorf("expected CBOR type Map (major type 5) for attStmt, got major type %d", mt)
 	}
+
 	size, err := dec.ReadAdditional(ai)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read attStmt map size: %w", err)
 	}
-	for i := 0; i < int(size); i++ {
-		mt, ai, err := dec.ReadHeader()
+	for i := range size {
+		mt, ai, err = dec.ReadHeader()
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read attStmt map key header at index %d: %w", i, err)
 		}
 		if mt != cbor.TextString {
-			return fmt.Errorf("cbor: expected textstring for attStmt map key got %v", mt)
+			return fmt.Errorf("expected string map key at index %d, got major type %d", i, mt)
 		}
 		key, err := dec.ReadUnsafeTextString(ai)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read attStmt map key string at index %d: %w", i, err)
 		}
 		switch key {
 		case "receipt":
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read map value header (key "receipt") at index %d: %w`, i, err)
 			}
 			if mt != cbor.ByteString {
-				return fmt.Errorf("cbor: expected bytestring for \"receipt\", got %v", mt)
+				return fmt.Errorf(`expected bytestring for receipt (key "receipt"), got major type %d`, mt)
 			}
 			val, err := dec.ReadByteString(ai)
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read receipt bytes (key "receipt"): %w`, err)
 			}
 			as.Receipt = val
 		case "x5c":
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read map value header (key "x5c") at index %d: %w`, i, err)
 			}
 			if mt != cbor.Array {
-				return fmt.Errorf("cbor: expected array for \"x5c\", got %v", mt)
+				return fmt.Errorf(`expected array for x5c (key "x5c"), got major type %d`, mt)
 			}
-			size, err := dec.ReadAdditional(ai)
+			count, err := dec.ReadAdditional(ai)
 			if err != nil {
-				return err
+				return fmt.Errorf(`failed to read x5c array size (key "x5c"): %w`, err)
 			}
-			array := make([][]byte, size)
-			for i := 0; i < int(size); i++ {
+			array := make([][]byte, count)
+			for j := range count {
 				mt, ai, err = dec.ReadHeader()
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to read x5c array item header at index %d: %w", j, err)
 				}
 				if mt != cbor.ByteString {
-					return fmt.Errorf("cbor: expected bytestring in \"x5c array\", got %v", mt)
+					return fmt.Errorf("expected bytestring in x5c array at index %d, got major type %d", j, mt)
 				}
 				val, err := dec.ReadByteString(ai)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to read x5c array item bytes at index %d: %w", j, err)
 				}
-				array[i] = val
+				array[j] = val
 			}
 			as.X5C = array
+		default:
+			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
 		}
 	}
 	return nil

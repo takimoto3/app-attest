@@ -4,7 +4,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 
 	"github.com/takimoto3/app-attest/cbor"
 )
@@ -19,19 +21,62 @@ const (
 
 const minAuthDataLen = 37
 
+type ValidationCategory uint32
+
+const (
+	ValidationCategoryInvalid      ValidationCategory = 0
+	ValidationCategoryOSExecutable ValidationCategory = 1
+	ValidationCategoryTestFlight   ValidationCategory = 2
+	ValidationCategoryDevelopment  ValidationCategory = 3
+	ValidationCategoryAppStore     ValidationCategory = 4
+	ValidationCategoryEnterprise   ValidationCategory = 5
+	ValidationCategoryDeveloperID  ValidationCategory = 6
+	ValidationCategoryRestricted7  ValidationCategory = 7
+	ValidationCategoryRestricted8  ValidationCategory = 8
+	ValidationCategoryRestricted9  ValidationCategory = 9
+	ValidationCategoryOther        ValidationCategory = 10
+)
+
+func (c ValidationCategory) String() string {
+	switch c {
+	case ValidationCategoryInvalid:
+		return "Invalid"
+	case ValidationCategoryOSExecutable:
+		return "OS Executable"
+	case ValidationCategoryTestFlight:
+		return "TestFlight"
+	case ValidationCategoryDevelopment:
+		return "Development"
+	case ValidationCategoryAppStore:
+		return "App Store"
+	case ValidationCategoryEnterprise:
+		return "Enterprise/Ad-hoc"
+	case ValidationCategoryDeveloperID:
+		return "Developer ID"
+	case ValidationCategoryRestricted7, ValidationCategoryRestricted8, ValidationCategoryRestricted9:
+		return fmt.Sprintf("Restricted(%d)", uint32(c))
+	case ValidationCategoryOther:
+		return "Other"
+	default:
+		return fmt.Sprintf("Unknown(%d)", uint32(c))
+	}
+}
+
+var ErrUnknownKey = errors.New("authdata: unknown key")
+
 type AuthenticatorData struct {
-	RPIDHash       []byte
-	Flags          byte
-	Counter        uint32
-	CredentialData AttestedCredential
+	RPIDHash                []byte
+	Flags                   byte
+	Counter                 uint32
+	CredentialData          AttestedCredential
+	AppleBundleVersion      string `cbor:"apple_bundle_version_01"`
+	AppleValidationCategory uint32 `cbor:"apple_validation_category_01"`
 }
 
 type AttestedCredential struct {
-	AAGUID                  []byte
-	CredentialID            []byte
-	CoseKey                 CoseKey
-	AppleBundleVersion      string `cbor:"apple_bundle_version_01"`
-	AppleValidationCategory uint32 `cbor:"apple_validation_category_01"`
+	AAGUID       []byte
+	CredentialID []byte
+	CoseKey      CoseKey
 }
 
 func (auth *AuthenticatorData) HasAttestedCredentialData() bool {
@@ -42,29 +87,111 @@ func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
 	if minAuthDataLen > len(rawBytes) {
 		return fmt.Errorf("authenticator data length too short: got %d bytes", len(rawBytes))
 	}
-	auth.RPIDHash = rawBytes[:32]
-	auth.Flags = rawBytes[32]
-	auth.Counter = binary.BigEndian.Uint32(rawBytes[33:37])
-
-	remain := len(rawBytes) - minAuthDataLen
+	r := safeReader{rawBytes: rawBytes}
+	rpidHash, err := r.ReadBytes(32)
+	if err != nil {
+		return fmt.Errorf("failed to read RPIDHash: %w", err)
+	}
+	auth.RPIDHash = rpidHash
+	flag, err := r.ReadByte()
+	if err != nil {
+		return fmt.Errorf("failed to read Flags: %w", err)
+	}
+	auth.Flags = flag
+	counter, err := r.ReadUint32()
+	if err != nil {
+		return fmt.Errorf("failed to read Counter: %w", err)
+	}
+	auth.Counter = counter
 
 	if auth.HasAttestedCredentialData() {
 		if len(rawBytes) > minAuthDataLen {
-			auth.CredentialData = AttestedCredential{}
-			auth.CredentialData.AAGUID = rawBytes[37:53]
-			credIDLen := binary.BigEndian.Uint16(rawBytes[53:55])
-			auth.CredentialData.CredentialID = rawBytes[55 : 55+credIDLen]
-			rest := rawBytes[55+credIDLen:]
-			dec := cbor.NewDecoder(rest)
-			auth.CredentialData.CoseKey = CoseKey{}
-			err := auth.CredentialData.CoseKey.UnmarshalCBOR(dec)
+			aaguid, err := r.ReadBytes(16)
 			if err != nil {
+				return fmt.Errorf("failed to read AAGUID: %w", err)
+			}
+			credIDLen, err := r.ReadUint16()
+			if err != nil {
+				return fmt.Errorf("failed to read credential ID length: %w", err)
+			}
+			credID, err := r.ReadBytes(int(credIDLen))
+			if err != nil {
+				return fmt.Errorf("failed to read credential ID: %w", err)
+			}
+
+			auth.CredentialData = AttestedCredential{
+				AAGUID:       aaguid,
+				CredentialID: credID,
+			}
+
+			dec := cbor.NewDecoder(r.UnreadBytes())
+			auth.CredentialData.CoseKey = CoseKey{}
+			if err := auth.CredentialData.CoseKey.UnmarshalCBOR(dec); err != nil {
 				return err
 			}
-			remain = dec.Len()
+			r.Advance(len(r.UnreadBytes()) - dec.Len())
 		}
 	}
-	if remain != 0 {
+	if r.Len() > 0 {
+		dec := cbor.NewDecoder(r.UnreadBytes())
+		mt, ai, err := dec.ReadHeader()
+		if err != nil {
+			return fmt.Errorf("failed to read CBOR map header: %w", err)
+		}
+		if mt != cbor.Map {
+			return fmt.Errorf("expected CBOR type Map (major type 5), got major type %d", mt)
+		}
+		size, err := dec.ReadAdditional(ai)
+		if err != nil {
+			return fmt.Errorf("failed to read CBOR map size: %w", err)
+		}
+		for i := uint64(0); i < size; i++ {
+			mt, ai, err := dec.ReadHeader()
+			if err != nil {
+				return fmt.Errorf("failed to read map key header at index %d: %w", i, err)
+			}
+			if mt != cbor.TextString {
+				return fmt.Errorf("expected string map key at index %d, got major type %d", i, mt)
+			}
+			key, err := dec.ReadUnsafeTextString(ai)
+			if err != nil {
+				return fmt.Errorf("failed to read map key string at index %d: %w", i, err)
+			}
+			switch key {
+			case "apple_bundle_version_01":
+				mt, ai, err := dec.ReadHeader()
+				if err != nil {
+					return fmt.Errorf(`failed to read map value header (key "apple_bundle_version_01") %d: %w`, i, err)
+				}
+				if mt != cbor.TextString {
+					return fmt.Errorf(`expected string for version (key "apple_bundle_version_01"), got major type %d`, mt)
+				}
+				version, err := dec.ReadTextString(ai)
+				if err != nil {
+					return fmt.Errorf(`failed to read version (key "apple_bundle_version_01"): %w`, err)
+				}
+				auth.AppleBundleVersion = version
+			case "apple_validation_category_01":
+				mt, ai, err := dec.ReadHeader()
+				if err != nil {
+					return fmt.Errorf(`failed to read map value header (key "apple_validation_category_01") %d: %w`, i, err)
+				}
+				if mt != cbor.UnsignedInt {
+					return fmt.Errorf(`expected integer for category (key "apple_bundle_version_01"), got major type %d`, mt)
+				}
+				category, err := dec.ReadUint32(ai)
+				if err != nil {
+					return fmt.Errorf(`failed to read version (key "apple_bundle_version_01"): %w`, err)
+				}
+				auth.AppleValidationCategory = uint32(category)
+			default:
+				return fmt.Errorf("%w: %s", ErrUnknownKey, key)
+			}
+		}
+		r.Advance(len(r.UnreadBytes()) - dec.Len())
+	}
+
+	if r.Len() != 0 {
 		return fmt.Errorf("unexpected trailing data in authenticator data")
 	}
 
@@ -111,7 +238,7 @@ func (k *CoseKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 		return fmt.Errorf("failed to read CBOR map size: %w", err)
 	}
 
-	for i := 0; i < int(size); i++ {
+	for i := range size {
 		mt, ai, err := dec.ReadHeader()
 		if err != nil {
 			return fmt.Errorf("failed to read map key header at index %d: %w", i, err)
@@ -197,7 +324,71 @@ func (k *CoseKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 			k.Y = val
 
 		default:
+			return fmt.Errorf("%w: %d", ErrUnknownKey, key)
 		}
 	}
 	return nil
+}
+
+type safeReader struct {
+	rawBytes []byte
+	offset   int
+}
+
+func (r *safeReader) ReadByte() (byte, error) {
+	if len(r.rawBytes)-r.offset < 1 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	b := r.rawBytes[r.offset]
+	r.offset += 1
+	return b, nil
+}
+
+func (r *safeReader) ReadBytes(n int) ([]byte, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("invalid length: %d", n)
+	}
+	if len(r.rawBytes)-r.offset < n {
+		return nil, io.ErrUnexpectedEOF
+	}
+	b := r.rawBytes[r.offset : r.offset+n]
+	r.offset += n
+	return b, nil
+}
+
+func (r *safeReader) ReadUint16() (uint16, error) {
+	b, err := r.ReadBytes(2)
+	if err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint16(b), nil
+}
+
+func (r *safeReader) ReadUint32() (uint32, error) {
+	b, err := r.ReadBytes(4)
+	if err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint32(b), nil
+}
+
+func (r *safeReader) UnreadBytes() []byte {
+	if r.offset >= len(r.rawBytes) {
+		return nil
+	}
+	return r.rawBytes[r.offset:]
+}
+
+func (r *safeReader) Advance(pos int) {
+	if pos < 0 {
+		pos = 0
+	}
+	r.offset += pos
+	if r.offset > len(r.rawBytes) {
+		r.offset = len(r.rawBytes)
+	}
+}
+
+func (r *safeReader) Len() int {
+	return len(r.rawBytes) - r.offset
 }
