@@ -23,9 +23,9 @@ type Environment int
 
 // attestation envirom
 const (
-	None        Environment = iota
-	Sandbox                 // the App Attest sandbox environment.
-	Production              // The App Attest production environment.
+	None       Environment = iota
+	Sandbox                // the App Attest sandbox environment.
+	Production             // The App Attest production environment.
 )
 
 type Platform int
@@ -99,10 +99,13 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	if attestObj.Format != "apple-appattest" {
 		return nil, fmt.Errorf("invalid attestation format: %q", attestObj.Format)
 	}
-	receipt := attestObj.AttStmt.Receipt
-	if len(receipt) == 0 {
-		return nil, fmt.Errorf("invalid attestation: missing receipt")
+	if len(attestObj.AuthData) == 0 {
+		return nil, errors.New("authData: empty data")
 	}
+	if len(attestObj.AttStmt.X5C) == 0 {
+		return nil, errors.New("AttStmt: empty data")
+	}
+	receipt := attestObj.AttStmt.Receipt
 	roots := service.RootCertPool.Clone()
 	intermediates := x509.NewCertPool()
 
