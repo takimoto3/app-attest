@@ -233,7 +233,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 		"valid authenticator data without attested credential, with extensions": {
 			data: merge(
 				sha2("1234567890.appleID"),     // RP ID hash
-				[]byte{0x00},                   // flag: no attested credential (assertion に典型的な形)
+				[]byte{0x00},                   // flag: no attested credential (typical shape for assertion)
 				[]byte{0x00, 0x00, 0x00, 0x05}, // counter = 5
 				cborMap( // Extensions
 					item{cborText("apple_validation_category_01"), cborUint(1)}, // apple_validation_category_01
