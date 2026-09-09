@@ -59,8 +59,8 @@ func TestDecodeInt(t *testing.T) {
 	}{
 		"uint small":     {[]byte{0x00}, 0, nil},                // 0
 		"uint 10":        {[]byte{0x0a}, 10, nil},               // 10
-		"uint 24":        {[]byte{0x18, 0x18}, 24, nil},         // ai=24, 1バイト
-		"uint 300":       {[]byte{0x19, 0x01, 0x2c}, 300, nil},  // ai=25, 2バイト
+		"uint 24":        {[]byte{0x18, 0x18}, 24, nil},         // ai=24, 1 byte
+		"uint 300":       {[]byte{0x19, 0x01, 0x2c}, 300, nil},  // ai=25, 2 bytes
 		"neg small":      {[]byte{0x20}, -1, nil},               // -1
 		"neg 10":         {[]byte{0x29}, -10, nil},              // -10
 		"neg 300":        {[]byte{0x39, 0x01, 0x2c}, -301, nil}, // -301
@@ -125,7 +125,7 @@ func TestDecodeTextString(t *testing.T) {
 		wantErr error
 	}{
 		"short text":    {[]byte{0x63, 'f', 'o', 'o'}, "foo", nil},                   // 0x63 → len=3
-		"1 byte len":    {[]byte{0x78, 0x05, 'h', 'e', 'l', 'l', 'o'}, "hello", nil}, // ai=24, 1バイト長
+		"1 byte len":    {[]byte{0x78, 0x05, 'h', 'e', 'l', 'l', 'o'}, "hello", nil}, // ai=24, 1 byte length
 		"invalid UTF-8": {[]byte{0x62, 0xff, 0xfe}, "", ErrInvalidString},
 	}
 

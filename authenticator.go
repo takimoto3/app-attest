@@ -21,47 +21,6 @@ const (
 
 const minAuthDataLen = 37
 
-type ValidationCategory uint32
-
-const (
-	ValidationCategoryInvalid      ValidationCategory = 0
-	ValidationCategoryOSExecutable ValidationCategory = 1
-	ValidationCategoryTestFlight   ValidationCategory = 2
-	ValidationCategoryDevelopment  ValidationCategory = 3
-	ValidationCategoryAppStore     ValidationCategory = 4
-	ValidationCategoryEnterprise   ValidationCategory = 5
-	ValidationCategoryDeveloperID  ValidationCategory = 6
-	ValidationCategoryRestricted7  ValidationCategory = 7
-	ValidationCategoryRestricted8  ValidationCategory = 8
-	ValidationCategoryRestricted9  ValidationCategory = 9
-	ValidationCategoryOther        ValidationCategory = 10
-)
-
-func (c ValidationCategory) String() string {
-	switch c {
-	case ValidationCategoryInvalid:
-		return "Invalid"
-	case ValidationCategoryOSExecutable:
-		return "OS Executable"
-	case ValidationCategoryTestFlight:
-		return "TestFlight"
-	case ValidationCategoryDevelopment:
-		return "Development"
-	case ValidationCategoryAppStore:
-		return "App Store"
-	case ValidationCategoryEnterprise:
-		return "Enterprise/Ad-hoc"
-	case ValidationCategoryDeveloperID:
-		return "Developer ID"
-	case ValidationCategoryRestricted7, ValidationCategoryRestricted8, ValidationCategoryRestricted9:
-		return fmt.Sprintf("Restricted(%d)", uint32(c))
-	case ValidationCategoryOther:
-		return "Other"
-	default:
-		return fmt.Sprintf("Unknown(%d)", uint32(c))
-	}
-}
-
 var ErrUnknownKey = errors.New("authdata: unknown key")
 
 type AuthenticatorData struct {
@@ -134,59 +93,8 @@ func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
 	}
 	if r.Len() > 0 {
 		dec := cbor.NewDecoder(r.UnreadBytes())
-		mt, ai, err := dec.ReadHeader()
-		if err != nil {
-			return fmt.Errorf("failed to read CBOR map header: %w", err)
-		}
-		if mt != cbor.Map {
-			return fmt.Errorf("expected CBOR type Map (major type 5), got major type %d", mt)
-		}
-		size, err := dec.ReadAdditional(ai)
-		if err != nil {
-			return fmt.Errorf("failed to read CBOR map size: %w", err)
-		}
-		for i := uint64(0); i < size; i++ {
-			mt, ai, err := dec.ReadHeader()
-			if err != nil {
-				return fmt.Errorf("failed to read map key header at index %d: %w", i, err)
-			}
-			if mt != cbor.TextString {
-				return fmt.Errorf("expected string map key at index %d, got major type %d", i, mt)
-			}
-			key, err := dec.ReadUnsafeTextString(ai)
-			if err != nil {
-				return fmt.Errorf("failed to read map key string at index %d: %w", i, err)
-			}
-			switch key {
-			case "apple_bundle_version_01":
-				mt, ai, err := dec.ReadHeader()
-				if err != nil {
-					return fmt.Errorf(`failed to read map value header (key "apple_bundle_version_01") %d: %w`, i, err)
-				}
-				if mt != cbor.TextString {
-					return fmt.Errorf(`expected string for version (key "apple_bundle_version_01"), got major type %d`, mt)
-				}
-				version, err := dec.ReadTextString(ai)
-				if err != nil {
-					return fmt.Errorf(`failed to read version (key "apple_bundle_version_01"): %w`, err)
-				}
-				auth.AppleBundleVersion = version
-			case "apple_validation_category_01":
-				mt, ai, err := dec.ReadHeader()
-				if err != nil {
-					return fmt.Errorf(`failed to read map value header (key "apple_validation_category_01") %d: %w`, i, err)
-				}
-				if mt != cbor.UnsignedInt {
-					return fmt.Errorf(`expected integer for category (key "apple_bundle_version_01"), got major type %d`, mt)
-				}
-				category, err := dec.ReadUint32(ai)
-				if err != nil {
-					return fmt.Errorf(`failed to read version (key "apple_bundle_version_01"): %w`, err)
-				}
-				auth.AppleValidationCategory = uint32(category)
-			default:
-				return fmt.Errorf("%w: %s", ErrUnknownKey, key)
-			}
+		if err := auth.unmarshalExtensions(dec); err != nil {
+			return fmt.Errorf("failed to parse extensions: %w", err)
 		}
 		r.Advance(len(r.UnreadBytes()) - dec.Len())
 	}
@@ -195,6 +103,64 @@ func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
 		return fmt.Errorf("unexpected trailing data in authenticator data")
 	}
 
+	return nil
+}
+
+func (auth *AuthenticatorData) unmarshalExtensions(dec *cbor.Decoder) error {
+	mt, ai, err := dec.ReadHeader()
+	if err != nil {
+		return fmt.Errorf("failed to read CBOR map header: %w", err)
+	}
+	if mt != cbor.Map {
+		return fmt.Errorf("expected CBOR type Map (major type 5), got major type %d", mt)
+	}
+	size, err := dec.ReadAdditional(ai)
+	if err != nil {
+		return fmt.Errorf("failed to read CBOR map size: %w", err)
+	}
+	for i := uint64(0); i < size; i++ {
+		mt, ai, err := dec.ReadHeader()
+		if err != nil {
+			return fmt.Errorf("failed to read map key header at index %d: %w", i, err)
+		}
+		if mt != cbor.TextString {
+			return fmt.Errorf("expected string map key at index %d, got major type %d", i, mt)
+		}
+		key, err := dec.ReadUnsafeTextString(ai)
+		if err != nil {
+			return fmt.Errorf("failed to read map key string at index %d: %w", i, err)
+		}
+		switch key {
+		case "apple_bundle_version_01":
+			mt, ai, err := dec.ReadHeader()
+			if err != nil {
+				return fmt.Errorf(`failed to read map value header (key "apple_bundle_version_01") %d: %w`, i, err)
+			}
+			if mt != cbor.TextString {
+				return fmt.Errorf(`expected string for version (key "apple_bundle_version_01"), got major type %d`, mt)
+			}
+			version, err := dec.ReadTextString(ai)
+			if err != nil {
+				return fmt.Errorf(`failed to read version (key "apple_bundle_version_01"): %w`, err)
+			}
+			auth.AppleBundleVersion = version
+		case "apple_validation_category_01":
+			mt, ai, err := dec.ReadHeader()
+			if err != nil {
+				return fmt.Errorf(`failed to read map value header (key "apple_validation_category_01") %d: %w`, i, err)
+			}
+			if mt != cbor.UnsignedInt {
+				return fmt.Errorf(`expected integer for category (key "apple_validation_category_01"), got major type %d`, mt)
+			}
+			category, err := dec.ReadUint32(ai)
+			if err != nil {
+				return fmt.Errorf(`failed to read category (key "apple_validation_category_01"): %w`, err)
+			}
+			auth.AppleValidationCategory = category
+		default:
+			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
+		}
+	}
 	return nil
 }
 
