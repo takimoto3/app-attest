@@ -28,116 +28,133 @@ func (m *mockToken) SetLogger(l *slog.Logger) {
 }
 
 func TestClient_Do(t *testing.T) {
+	base64Bytes := func(data []byte) []byte {
+		buf := make([]byte, base64.StdEncoding.EncodedLen(len(data)))
+		base64.StdEncoding.Encode(buf, data)
+		return buf
+	}
+
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	tests := []struct {
-		name       string
-		statusCode int
-		body       string
-		input      []byte
-		wantResp   []byte
-		wantErr    error
-		opts       []appleapi.Option
-		wantHost   string
+		name        string
+		statusCode  int
+		body        string
+		input       []byte
+		wantReqBody []byte
+		wantResp    []byte
+		wantErr     error
+		opts        []appleapi.Option
+		wantHost    string
 	}{
 		{
-			name:       "Success Production",
-			statusCode: 200,
-			body:       base64.StdEncoding.EncodeToString([]byte("receipt")),
-			input:      []byte("receipt"),
-			wantResp:   []byte("receipt"),
-			wantErr:    nil,
-			opts:       nil,
-			wantHost:   fraud.ProductionHost,
+			name:        "Success Production",
+			statusCode:  200,
+			body:        base64.StdEncoding.EncodeToString([]byte("receipt")),
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    []byte("receipt"),
+			wantErr:     nil,
+			opts:        nil,
+			wantHost:    fraud.ProductionHost,
 		},
 		{
-			name:       "Success Development",
-			statusCode: 200,
-			body:       base64.StdEncoding.EncodeToString([]byte("receipt")),
-			input:      []byte("receipt"),
-			wantResp:   []byte("receipt"),
-			wantErr:    nil,
-			opts:       []appleapi.Option{appleapi.WithDevelopment()},
-			wantHost:   fraud.DevelopmentHost,
+			name:        "Success Development",
+			statusCode:  200,
+			body:        base64.StdEncoding.EncodeToString([]byte("receipt")),
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    []byte("receipt"),
+			wantErr:     nil,
+			opts:        []appleapi.Option{appleapi.WithDevelopment()},
+			wantHost:    fraud.DevelopmentHost,
 		},
 		{
-			name:       "NotModified",
-			statusCode: 304,
-			body:       "",
-			input:      []byte("receipt"),
-			wantResp:   nil,
-			wantErr:    fraud.ErrNotModified,
-			opts:       nil,
-			wantHost:   fraud.ProductionHost,
+			name:        "NotModified",
+			statusCode:  304,
+			body:        "",
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    nil,
+			wantErr:     fraud.ErrNotModified,
+			opts:        nil,
+			wantHost:    fraud.ProductionHost,
 		},
 		{
-			name:       "IncorrectEnvironment",
-			statusCode: 400,
-			body:       "Incorrect Environment",
-			input:      []byte("receipt"),
-			wantResp:   nil,
-			wantErr:    fraud.ErrIncorrectEnvironment,
-			opts:       nil,
-			wantHost:   fraud.ProductionHost,
+			name:        "IncorrectEnvironment",
+			statusCode:  400,
+			body:        "Incorrect Environment",
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    nil,
+			wantErr:     fraud.ErrIncorrectEnvironment,
+			opts:        nil,
+			wantHost:    fraud.ProductionHost,
 		},
 		{
-			name:       "BadPayload",
-			statusCode: 400,
-			body:       "Bad Payload",
-			input:      []byte("receipt"),
-			wantResp:   nil,
-			wantErr:    fraud.ErrBadPayload,
-			opts:       nil,
-			wantHost:   fraud.ProductionHost,
+			name:        "BadPayload",
+			statusCode:  400,
+			body:        "Bad Payload",
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    nil,
+			wantErr:     fraud.ErrBadPayload,
+			opts:        nil,
+			wantHost:    fraud.ProductionHost,
 		},
 		{
-			name:       "Unauthorized",
-			statusCode: 401,
-			body:       "",
-			input:      []byte("receipt"),
-			wantResp:   nil,
-			wantErr:    fraud.ErrUnauthorized,
-			opts:       nil,
-			wantHost:   fraud.ProductionHost,
+			name:        "Unauthorized",
+			statusCode:  401,
+			body:        "",
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    nil,
+			wantErr:     fraud.ErrUnauthorized,
+			opts:        nil,
+			wantHost:    fraud.ProductionHost,
 		},
 		{
-			name:       "NoDataFound",
-			statusCode: 404,
-			body:       "",
-			input:      []byte("receipt"),
-			wantResp:   nil,
-			wantErr:    fraud.ErrNoDataFound,
-			opts:       nil,
-			wantHost:   fraud.ProductionHost,
+			name:        "NoDataFound",
+			statusCode:  404,
+			body:        "",
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    nil,
+			wantErr:     fraud.ErrNoDataFound,
+			opts:        nil,
+			wantHost:    fraud.ProductionHost,
 		},
 		{
-			name:       "TooManyRequests",
-			statusCode: 429,
-			body:       "",
-			input:      []byte("receipt"),
-			wantResp:   nil,
-			wantErr:    fraud.ErrTooManyRequests,
-			opts:       nil,
-			wantHost:   fraud.ProductionHost,
+			name:        "TooManyRequests",
+			statusCode:  429,
+			body:        "",
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    nil,
+			wantErr:     fraud.ErrTooManyRequests,
+			opts:        nil,
+			wantHost:    fraud.ProductionHost,
 		},
 		{
-			name:       "ServerError",
-			statusCode: 500,
-			body:       "",
-			input:      []byte("receipt"),
-			wantResp:   nil,
-			wantErr:    fraud.ErrServerError,
-			opts:       nil,
-			wantHost:   fraud.ProductionHost,
+			name:        "ServerError",
+			statusCode:  500,
+			body:        "",
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    nil,
+			wantErr:     fraud.ErrServerError,
+			opts:        nil,
+			wantHost:    fraud.ProductionHost,
 		},
 		{
-			name:       "ServiceUnavailable",
-			statusCode: 503,
-			body:       "",
-			input:      []byte("receipt"),
-			wantResp:   nil,
-			wantErr:    fraud.ErrServiceUnavailable,
-			opts:       nil,
-			wantHost:   fraud.ProductionHost,
+			name:        "ServiceUnavailable",
+			statusCode:  503,
+			body:        "",
+			input:       []byte("receipt"),
+			wantReqBody: base64Bytes([]byte("receipt")),
+			wantResp:    nil,
+			wantErr:     fraud.ErrServiceUnavailable,
+			opts:        nil,
+			wantHost:    fraud.ProductionHost,
 		},
 	}
 
@@ -146,7 +163,7 @@ func TestClient_Do(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
-				if !bytes.Equal(b, tt.input) {
+				if !bytes.Equal(b, tt.wantReqBody) {
 					t.Errorf("expected request body %q, got %q", tt.input, b)
 				}
 				authHeader := r.Header.Get("Authorization")

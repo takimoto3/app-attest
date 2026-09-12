@@ -108,7 +108,9 @@ func NewClientFromInitializer(initializer appleapi.HTTPClientInitializer, tp tok
 //   - ErrServerError (500)
 //   - ErrServiceUnavailable (503)
 func (c *Client) Do(ctx context.Context, receipt []byte) (*Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.inner.Host+Path, bytes.NewBuffer(receipt))
+	body := make([]byte, base64.StdEncoding.EncodedLen(len(receipt)))
+	base64.StdEncoding.Encode(body, receipt)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.inner.Host+Path, bytes.NewReader(body))
 	if err != nil {
 		c.inner.Logger.Error("failed to create AppAttest request", "error", err)
 		return nil, fmt.Errorf("failed to create request: %w", err)
