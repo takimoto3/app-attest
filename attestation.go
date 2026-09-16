@@ -13,6 +13,8 @@ import (
 	"github.com/takimoto3/app-attest/cbor"
 )
 
+const maxX5CCerts = 16
+
 // expectedACLBase64 is the expected access policy hash (aclBlob) for macOS App Attest keys
 // under SIP and Full Security mode (OID 1.2.840.113635.100.8.6).
 //
@@ -434,6 +436,9 @@ func (as *AttStmt) UnmarshalCBOR(dec *cbor.Decoder) error {
 			count, err := dec.ReadAdditional(ai)
 			if err != nil {
 				return fmt.Errorf(`failed to read x5c array size (key "x5c"): %w`, err)
+			}
+			if count > maxX5CCerts {
+				return fmt.Errorf(`x5c array too large (key "x5c"): got %d, max %d`, count, maxX5CCerts)
 			}
 			array := make([][]byte, count)
 			for j := range count {
