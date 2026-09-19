@@ -95,7 +95,7 @@ The following example shows how to use `fraud.Client` to get a new receipt and `
 ```go
 import (
     "context"
-    "crypto/x509"
+    "crypto/ecdsa"
     "errors"
     "fmt"
     "log"
@@ -107,6 +107,12 @@ import (
 )
 
 func main() {
+	  // The App ID and attested public key stored after the initial attestation.
+	  // Verify() checks that the public key in receipt field 3 matches
+	  // the attested public key stored from the initial attestation.
+	  var appID string
+	  var publicKey *ecdsa.PublicKey
+		
     // The receipt from the initial attestation, which you should have stored.
     var initialReceipt []byte
 
@@ -149,8 +155,8 @@ func main() {
     }
 
     // ---" 3. Parse and verify the new receipt ---
-    // Use the receipt verifier to parse the returned PKCS#7 container.
-    verifiedReceipt, err := receiptVerifier.ParseAndVerify(newReceiptBytes.Receipt)
+    // Parse and verify the returned PKCS#7 receipt.
+    verifiedReceipt, err := receiptVerifier.Verify(newReceiptBytes.Receipt, appID, publicKey)
     if err != nil {
         log.Fatalf("Failed to parse and verify new receipt: %v", err)
     }
