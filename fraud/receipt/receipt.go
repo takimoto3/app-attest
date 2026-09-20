@@ -33,8 +33,22 @@ func NewReceiptVerifier(pool *x509.CertPool) *ReceiptVerifier {
 	return &ReceiptVerifier{RootCertPool: pool}
 }
 
+func (rv *ReceiptVerifier) Verify(encoded []byte, appID string, pubkey *ecdsa.PublicKey) (*Receipt, error) {
+	r, err := rv.ParseAndVerify(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.Validate(appID, pubkey); err != nil {
+		return nil, err
+	}
+	return r, err
+}
+
 // ParseAndVerify parses a PKCS#7-encoded receipt, verifies its signature,
 // and extracts fields into a Receipt.
+//
+// Deprecated: use Verify instead. ParseAndVerify does not validate the
+// receipt against the expected App ID and attested public key.
 func (rv *ReceiptVerifier) ParseAndVerify(encoded []byte) (*Receipt, error) {
 	if rv.RootCertPool == nil {
 		return nil, errors.New("verifier is not initialized: RootCertPool is nil")
@@ -89,8 +103,9 @@ func (r *Receipt) Unmarshal(attributes []Attribute) error {
 			}
 			r.AppID = string(buf)
 		case 3: // Attested Public Key (X.509 certificate)
-			// Apple encodes this field as an OCTET STRING containing a DER-encoded X.509 certificate.
-			// The actual ECDSA public key can be extracted from the parsed certificate.
+			// Field 3 contains an OCTET STRING with a DER-encoded attested public key object.
+			// The current receipt format contains an X.509 certificate, from which the
+			// ECDSA public key is extracted.
 			var certDER []byte
 			if _, err := asn1.Unmarshal(attr.Raw.FullBytes, &certDER); err != nil {
 				return fmt.Errorf("failed to unmarshal attested certificate OCTET STRING: %w", err)
@@ -138,6 +153,12 @@ func (r *Receipt) Unmarshal(attributes []Attribute) error {
 func (r *Receipt) Validate(appID string, publicKey *ecdsa.PublicKey) error {
 	if r.AppID != appID {
 		return fmt.Errorf("app id mismatch: got %q, want %q", r.AppID, appID)
+	}
+	if publicKey == nil {
+		return errors.New("expected public key is nil")
+	}
+	if r.PublicKey == nil {
+		return errors.New("attested public key missing (field 3)")
 	}
 	if !r.PublicKey.Equal(publicKey) {
 		return errors.New("attested public key mismatch (field 3)")

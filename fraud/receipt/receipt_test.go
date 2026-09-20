@@ -45,9 +45,6 @@ func TestReceiptVerifier_ParseAndVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Set a default valid time for most tests (before certificate expiration)
-	testtime.SetTime(t, now)
-
 	// load JSON fixture
 	testData, err := testutils.LoadTestData()
 	if err != nil {
@@ -59,39 +56,122 @@ func TestReceiptVerifier_ParseAndVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	verifier := receipt.NewReceiptVerifier(pool)
-
-	data := testutils.DecodeB64(testData.Receipt[1].ReceiptBase64)
-	receipt, err := verifier.ParseAndVerify(data)
-	if err != nil {
-		t.Error(err)
-	}
-	if receipt == nil {
-		t.Fatal("receipt is nil")
-	}
-
 	appID := testData.Receipt[1].TeamIdentifier + "." + testData.Receipt[1].BundleIdentifier
 	pubkey, err := ParseECDSAPublicKeyFromPEM(testData.Receipt[1].PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = receipt.Validate(appID, pubkey)
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Advance the test time to exceed the receipt's MaxAge (using real receipt data)
-	// This should cause Validate to return an "invalid receipt creation time delta" error
-	testtime.SetTime(t, time.Date(2021, 1, 23, 12, 32, 41, 0, time.UTC))
+	t.Run("ParseAndVerify", func(t *testing.T) {
+		// Set a default valid time for most tests (before certificate expiration)
+		testtime.SetTime(t, now)
 
-	err = receipt.Validate(appID, pubkey)
-	if err == nil {
-		t.Fatal("expected error due to receipt creation time exceeding MaxAge")
-	}
-	if !strings.HasPrefix(err.Error(), "invalid receipt creation time delta=") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+		verifier := receipt.NewReceiptVerifier(pool)
+
+		data := testutils.DecodeB64(testData.Receipt[1].ReceiptBase64)
+		receipt, err := verifier.ParseAndVerify(data)
+		if err != nil {
+			t.Error(err)
+		}
+		if receipt == nil {
+			t.Fatal("receipt is nil")
+		}
+
+		err = receipt.Validate(appID, pubkey)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Advance the test time to exceed the receipt's MaxAge (using real receipt data)
+		// This should cause Validate to return an "invalid receipt creation time delta" error
+		testtime.SetTime(t, time.Date(2021, 1, 23, 12, 32, 41, 0, time.UTC))
+
+		err = receipt.Validate(appID, pubkey)
+		if err == nil {
+			t.Fatal("expected error due to receipt creation time exceeding MaxAge")
+		}
+		if !strings.HasPrefix(err.Error(), "invalid receipt creation time delta=") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("Verify", func(t *testing.T) {
+		// Set a default valid time for most tests (before certificate expiration)
+
+		tests := map[string]struct {
+			appID   string
+			pubkey  *ecdsa.PublicKey
+			now     time.Time
+			wantErr error
+		}{
+			"success case": {
+				appID:  appID,
+				pubkey: pubkey,
+				now:    now,
+			},
+			"appID mismatch": {
+				appID:   "appid.invalid",
+				pubkey:  pubkey,
+				now:     now,
+				wantErr: errors.New("app id mismatch: got"),
+			},
+			"public key is nil": {
+				appID:   appID,
+				now:     now,
+				wantErr: errors.New("expected public key is nil"),
+			},
+			"public key mismatch": {
+				appID:   appID,
+				pubkey:  &otherKey.PublicKey,
+				now:     now,
+				wantErr: errors.New("attested public key mismatch (field 3)"),
+			},
+			"creation time expired": {
+				appID:   appID,
+				pubkey:  pubkey,
+				now:     time.Date(2021, 1, 23, 12, 32, 42, 0, time.UTC),
+				wantErr: errors.New("invalid receipt creation time delta="),
+			},
+			"creation time is in the future": {
+				appID:   appID,
+				pubkey:  pubkey,
+				now:     time.Date(2021, 1, 23, 12, 26, 40, 0, time.UTC),
+				wantErr: errors.New("invalid receipt creation time delta="),
+			},
+		}
+
+		verifier := receipt.NewReceiptVerifier(pool)
+
+		data := testutils.DecodeB64(testData.Receipt[1].ReceiptBase64)
+
+		for name, tt := range tests {
+			t.Run(name, func(t *testing.T) {
+				testtime.SetTime(t, tt.now)
+
+				receipt, err := verifier.Verify(data, tt.appID, tt.pubkey)
+				if tt.wantErr != nil {
+					if err == nil {
+						t.Fatalf("expected error containing %q, got nil", tt.wantErr.Error())
+					}
+					if !strings.Contains(err.Error(), tt.wantErr.Error()) {
+						t.Errorf("got error %q, want error containing %q", err.Error(), tt.wantErr.Error())
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if receipt == nil {
+					t.Error("expected receipt, got nil")
+				}
+			})
+		}
+	})
 }
 
 // Helper: create ASN.1 OCTET STRING as raw attribute
@@ -187,56 +267,133 @@ func TestReceipt_Unmarshal(t *testing.T) {
 func TestReceipt_Validate(t *testing.T) {
 	now := time.Now()
 	pubKey := &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(1), Y: big.NewInt(2)}
-
-	baseReceipt := &receipt.Receipt{
-		AppID:        "com.example.app",
-		PublicKey:    pubKey,
-		Type:         "ATTEST",
-		CreationTime: now,
-		MaxAge:       5 * time.Minute,
-		RiskMetric:   42,
-	}
+	appID := "com.example.app"
 
 	cases := map[string]struct {
-		modify  func(*receipt.Receipt)
-		wantErr bool
+		receipt *receipt.Receipt
+		appID   string
+		pubkey  *ecdsa.PublicKey
+		wantErr error
 	}{
-		"ValidReceipt": {modify: func(r *receipt.Receipt) {}, wantErr: false},
+		"ValidReceipt": {
+			appID:  appID,
+			pubkey: pubKey,
+			receipt: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    pubKey,
+				Type:         "ATTEST",
+				CreationTime: now,
+				MaxAge:       5 * time.Minute,
+				RiskMetric:   42,
+			},
+		},
 		"AppIDMismatch": {
-			modify:  func(r *receipt.Receipt) { r.AppID = "com.other.app" },
-			wantErr: true,
+			appID:  "appid.invalid",
+			pubkey: pubKey,
+			receipt: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    pubKey,
+				Type:         "ATTEST",
+				CreationTime: now,
+				MaxAge:       5 * time.Minute,
+				RiskMetric:   42,
+			},
+			wantErr: errors.New("app id mismatch: "),
+		},
+		"PublicKeyNil": {
+			appID:  appID,
+			pubkey: nil,
+			receipt: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    pubKey,
+				Type:         "ATTEST",
+				CreationTime: now,
+				MaxAge:       5 * time.Minute,
+				RiskMetric:   42,
+			},
+			wantErr: errors.New("expected public key is nil"),
+		},
+		"AttestedPublicKeyNil": {
+			appID:  appID,
+			pubkey: pubKey,
+			receipt: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    nil,
+				Type:         "ATTEST",
+				CreationTime: now,
+				MaxAge:       5 * time.Minute,
+				RiskMetric:   42,
+			},
+			wantErr: errors.New("attested public key missing (field 3)"),
 		},
 		"PublicKeyMismatch": {
-			modify: func(r *receipt.Receipt) {
-				r.PublicKey = &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(2), Y: big.NewInt(3)}
+			appID:  appID,
+			pubkey: pubKey,
+			receipt: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(2), Y: big.NewInt(3)},
+				Type:         "ATTEST",
+				CreationTime: now,
+				MaxAge:       5 * time.Minute,
+				RiskMetric:   42,
 			},
-			wantErr: true,
+			wantErr: errors.New("attested public key mismatch (field 3)"),
 		},
 		"InvalidType": {
-			modify:  func(r *receipt.Receipt) { r.Type = "INVALID" },
-			wantErr: true,
+			appID:  appID,
+			pubkey: pubKey,
+			receipt: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    pubKey,
+				Type:         "INVALID",
+				CreationTime: now,
+				MaxAge:       5 * time.Minute,
+				RiskMetric:   42,
+			},
+			wantErr: errors.New("invalid receipt type (field 6): "),
 		},
 		"CreationTimeExceeded": {
-			modify:  func(r *receipt.Receipt) { r.CreationTime = now.Add(-10 * time.Minute) },
-			wantErr: true,
+			appID:  appID,
+			pubkey: pubKey,
+			receipt: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    pubKey,
+				Type:         "ATTEST",
+				CreationTime: now.Add(-10 * time.Minute),
+				MaxAge:       5 * time.Minute,
+				RiskMetric:   42,
+			},
+			wantErr: errors.New("invalid receipt creation time delta="),
 		},
 		"CreationTimeFuture": {
-			modify:  func(r *receipt.Receipt) { r.CreationTime = now.Add(10 * time.Minute) },
-			wantErr: true,
+			appID:  appID,
+			pubkey: pubKey,
+			receipt: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    pubKey,
+				Type:         "ATTEST",
+				CreationTime: now.Add(10 * time.Minute),
+				MaxAge:       5 * time.Minute,
+				RiskMetric:   42,
+			},
+			wantErr: errors.New("invalid receipt creation time delta="),
 		},
 	}
 
 	for name, tc := range cases {
-		tc := tc
 		t.Run(name, func(t *testing.T) {
-			copy := *baseReceipt
-			tc.modify(&copy)
-			err := copy.Validate("com.example.app", pubKey)
-			if tc.wantErr && err == nil {
-				t.Fatalf("expected Validate error, got nil")
+			err := tc.receipt.Validate(tc.appID, tc.pubkey)
+			if tc.wantErr != nil {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr.Error()) {
+					t.Fatalf("got error %q, want error containing %q", err, tc.wantErr)
+				}
+				return
 			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("unexpected Validate error: %v", err)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 		})
 	}
