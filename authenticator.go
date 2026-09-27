@@ -149,14 +149,17 @@ func (auth *AuthenticatorData) unmarshalExtensions(dec *cbor.Decoder) error {
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "apple_validation_category_01") %d: %w`, i, err)
 			}
-			if mt != cbor.UnsignedInt {
-				return fmt.Errorf(`expected integer for category (key "apple_validation_category_01"), got major type %d`, mt)
+			if mt != cbor.ByteString {
+				return fmt.Errorf(`expected bytestring for category (key "apple_validation_category_01"), got major type %d`, mt)
 			}
-			category, err := dec.ReadUint32(ai)
+			category, err := dec.ReadByteString(ai)
 			if err != nil {
 				return fmt.Errorf(`failed to read category (key "apple_validation_category_01"): %w`, err)
 			}
-			auth.AppleValidationCategory = category
+			if len(category) != 4 {
+				return fmt.Errorf(`invalid category length for key "apple_validation_category_01": got %d, want 4`, len(category))
+			}
+			auth.AppleValidationCategory = binary.LittleEndian.Uint32(category)
 		default:
 			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
 		}

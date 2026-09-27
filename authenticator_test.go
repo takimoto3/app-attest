@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -14,6 +15,52 @@ import (
 	attest "github.com/takimoto3/app-attest"
 	"github.com/takimoto3/app-attest/cbor"
 )
+
+func TestAuthenticatorData_WithAppleGuideData(t *testing.T) {
+	rpIDHash := sha256.Sum256([]byte("1234567890.com.example.myapp"))
+	want := attest.AuthenticatorData{
+		RPIDHash: rpIDHash[:],
+		Flags:    0x40,
+		Counter:  0,
+		CredentialData: attest.AttestedCredential{
+			AAGUID: []byte("appattest\x00\x00\x00\x00\x00\x00\x00"),
+			CredentialID: []byte{
+				0xce, 0x04, 0x98, 0xf5, 0x84, 0x83, 0xfb, 0xb4,
+				0xda, 0x0d, 0x7b, 0x2c, 0x63, 0xa5, 0xa5, 0x38,
+				0xf5, 0x52, 0xd4, 0xad, 0xcb, 0x9a, 0x4f, 0xa9,
+				0x16, 0x19, 0x5c, 0x49, 0x61, 0x3e, 0x65, 0x5d,
+			},
+			CoseKey: attest.CoseKey{
+				Kty: 2,  // EC2
+				Alg: -7, // ES256
+				Crv: 1,  // P-256
+				X: []byte{
+					0x43, 0x32, 0x54, 0x4a, 0xcf, 0x32, 0x3d, 0xb7,
+					0x74, 0x44, 0x3c, 0xaa, 0xf3, 0x39, 0xf5, 0x6e,
+					0x7e, 0x95, 0xc7, 0x24, 0xfa, 0xc2, 0xc1, 0x42,
+					0x59, 0xf3, 0x65, 0xe2, 0x44, 0x56, 0x50, 0xb2,
+				},
+				Y: []byte{
+					0xb5, 0xfb, 0x28, 0x5b, 0xcf, 0x54, 0x9b, 0xcb,
+					0x60, 0x59, 0x44, 0x12, 0xe7, 0x68, 0x2a, 0x24,
+					0x27, 0xee, 0xad, 0xa9, 0xfb, 0x52, 0xdf, 0xed,
+					0x0b, 0x1a, 0xb1, 0x7e, 0xd0, 0x9f, 0xa9, 0xbd,
+				},
+			},
+		},
+		AppleBundleVersion:      "1",
+		AppleValidationCategory: 1,
+	}
+	data := getAuthDataFromAppleGuide(t)
+	authData := attest.AuthenticatorData{}
+	if err := authData.Unmarshal(data); err != nil {
+		t.Fatal(err)
+	}
+
+	if diff := cmp.Diff(want, authData); diff != "" {
+		t.Errorf("ParseAuthenticatorData mismatch (-want +got):\n%s", diff)
+	}
+}
 
 func TestAuthenticatorData_HasAttestedCredentialData(t *testing.T) {
 	tests := map[string]struct {
@@ -174,8 +221,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 					item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
 				),
 				cborMap( // Extensions
-					item{cborText("apple_validation_category_01"), cborUint(1)}, // apple_validation_category_01
-					item{cborText("apple_bundle_version_01"), cborText("1.0")},  // apple_bundle_version_01
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})}, // apple_validation_category_01
+					item{cborText("apple_bundle_version_01"), cborText("1.0")},                                // apple_bundle_version_01
 				),
 			),
 			want: &attest.AuthenticatorData{
@@ -236,8 +283,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				[]byte{0x00},                   // flag: no attested credential (typical shape for assertion)
 				[]byte{0x00, 0x00, 0x00, 0x05}, // counter = 5
 				cborMap( // Extensions
-					item{cborText("apple_validation_category_01"), cborUint(1)}, // apple_validation_category_01
-					item{cborText("apple_bundle_version_01"), cborText("1.0")},  // apple_bundle_version_01
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})}, // apple_validation_category_01
+					item{cborText("apple_bundle_version_01"), cborText("1.0")},                                // apple_bundle_version_01
 				),
 			),
 			want: &attest.AuthenticatorData{
@@ -356,7 +403,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				[]byte{0x00},
 				[]byte{0x00, 0x00, 0x00, 0x00},
 				cborMap(
-					item{cborText("apple_validation_category_01"), cborUint(1)},
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})}, // apple_validation_category_01
 				),
 				[]byte{0xFF}, // extra trailing byte
 			),
