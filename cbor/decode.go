@@ -139,19 +139,6 @@ func (d *Decoder) ReadInt(mt MajorType, ai byte) (int64, error) {
 	return 0, ErrInvalidIntType
 }
 
-// ReadUint32 reads a CBOR unsigned integer value and returns it as uint32.
-// Returns ErrIntegerOverflow if the value exceeds math.MaxUint32.
-func (d *Decoder) ReadUint32(ai byte) (uint32, error) {
-	n, err := d.ReadAdditional(ai)
-	if err != nil {
-		return 0, err
-	}
-	if n > math.MaxUint32 {
-		return 0, ErrIntegerOverflow
-	}
-	return uint32(n), nil
-}
-
 // ReadByteString reads a CBOR byte string (major type 2).
 // The AI value specifies the length or provides information to read it.
 // Returns a slice referencing the underlying data without copying.
