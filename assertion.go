@@ -28,8 +28,42 @@ type AssertionService struct {
 	Counter   uint32
 }
 
+type AssertionResult struct {
+	// Counter is the new sign count. Callers must persist it and reject
+	// any future assertion whose counter isn't strictly greater.
+	Counter uint32
+
+	// AppleBundleVersion is the attested CFBundleVersion. Empty on iOS 26
+	// and earlier, which lack this extension.
+	AppleBundleVersion string
+
+	// AppleValidationCategory is the attested distribution channel
+	// (App Store, TestFlight, Development, etc). Zero value on iOS 26
+	// and earlier, which lack this extension.
+	AppleValidationCategory ValidationCategory
+}
+
 // Verify checks a single assertion object and returns the counter.
+//
+// Deprecated: Use VerifyWithExtensions instead, which also returns the
+// Apple-attested bundle version and validation category extensions
+// introduced in iOS 27.
 func (service *AssertionService) Verify(assertObject *AssertionObject, challenge string, clientData []byte) (uint32, error) {
+	result, err := service.verify(assertObject, challenge, clientData)
+	if err != nil {
+		return 0, err
+	}
+	return result.Counter, nil
+}
+
+// VerifyWithExtensions checks a single assertion object and returns the
+// verification result, including the sign counter and any Apple-attested
+// app-version extensions (iOS 27+).
+func (service *AssertionService) VerifyWithExtensions(assertObject *AssertionObject, challenge string, clientData []byte) (*AssertionResult, error) {
+	return service.verify(assertObject, challenge, clientData)
+}
+
+func (service *AssertionService) verify(assertObject *AssertionObject, challenge string, clientData []byte) (*AssertionResult, error) {
 	// 1. Compute clientDataHash as the SHA256 hash of clientData.
 	clientDataHash := sha256.Sum256(clientData)
 
@@ -42,30 +76,34 @@ func (service *AssertionService) Verify(assertObject *AssertionObject, challenge
 	// 3. Use the public key that you store from the attestation object to verify that the assertion’s signature is valid for nonce.
 	nonceHash := sha256.Sum256(nonce[:])
 	if ok := ecdsa.VerifyASN1(service.PublicKey, nonceHash[:], assertObject.Signature); !ok {
-		return 0, ErrInvalidSignature
+		return nil, ErrInvalidSignature
 	}
 
 	// 4. Compute the SHA256 hash of the client’s App ID, and verify that it matches the RP ID in the authenticator data.
 	authData := AuthenticatorData{}
 	if err := authData.Unmarshal(assertObject.AuthData); err != nil {
-		return 0, fmt.Errorf("authenticator data decoding failed: %w", err)
+		return nil, fmt.Errorf("authenticator data decoding failed: %w", err)
 	}
 	appIDHash := sha256.Sum256([]byte(service.AppID))
 	if !bytes.Equal(authData.RPIDHash[:], appIDHash[:]) {
-		return 0, ErrUnmatchRPIDHash
+		return nil, ErrUnmatchRPIDHash
 	}
 
 	// 5. Verify that the authenticator data’s counter value is greater than the value from the previous assertion, or greater than 0 on the first assertion.
 	if authData.Counter <= service.Counter {
-		return 0, fmt.Errorf("counter was not not greater than previous [%d, previous: %d]", authData.Counter, service.Counter)
+		return nil, fmt.Errorf("counter was not not greater than previous [%d, previous: %d]", authData.Counter, service.Counter)
 	}
 
 	// 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
 	if challenge != service.Challenge {
-		return 0, fmt.Errorf("invalid challenge expected: %s, received: %s", service.Challenge, challenge)
+		return nil, fmt.Errorf("invalid challenge expected: %s, received: %s", service.Challenge, challenge)
 	}
 
-	return authData.Counter, nil
+	return &AssertionResult{
+		Counter:                 authData.Counter,
+		AppleBundleVersion:      authData.AppleBundleVersion,
+		AppleValidationCategory: ValidationCategory(authData.AppleValidationCategory),
+	}, nil
 }
 
 // UnmarshalCBOR decodes the CBOR-encoded data into the AssertionObject.

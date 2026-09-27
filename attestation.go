@@ -297,7 +297,11 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	}
 
 	return &Result{
-		Receipt:                 receipt,
+		// Receipt from AttStmt.UnmarshalCBOR aliases the caller's input
+		// buffer (ReadByteString in this cbor package is zero-copy despite
+		// its name — there is no copying variant). Result.Receipt is meant
+		// for long-term storage by callers, so it must be cloned here.
+		Receipt:                 bytes.Clone(receipt),
 		PublicKey:               pubkey,
 		Environment:             env,
 		AppleBundleVersion:      authData.AppleBundleVersion,
