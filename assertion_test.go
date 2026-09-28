@@ -5,7 +5,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -146,23 +148,32 @@ func TestAssertionService_Verify(t *testing.T) {
 			},
 			1,
 			testData.Assertion.PublicKey,
-			fmt.Errorf("counter was not not greater than previous [1, previous: 3]"),
+			fmt.Errorf("counter was not greater than previous [1, previous: 3]"),
+		},
+		"Error Case:nil public key": {
+			testData.Assertion.AppID,
+			testData.Assertion.Assertion,
+			testData.Assertion.ClientData,
+			string(testData.Assertion.Challenge),
+			StoredData{
+				Challenge: string(testData.Assertion.Challenge),
+				Counter:   0,
+			},
+			1,
+			nil, // pubkey
+			errors.New("assertion state: PublicKey is nil"),
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			pubany, err := x509.ParsePKIXPublicKey(tt.pubkey)
-			if err != nil {
-				t.Fatal(err)
-			}
-			pubkey := pubany.(*ecdsa.PublicKey)
-
-			target := attest.AssertionService{
-				AppID:     tt.appID,
-				Challenge: tt.stored.Challenge,
-				Counter:   uint32(tt.stored.Counter),
-				PublicKey: pubkey,
+			var pubkey *ecdsa.PublicKey
+			if tt.pubkey != nil {
+				pubany, err := x509.ParsePKIXPublicKey(tt.pubkey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pubkey = pubany.(*ecdsa.PublicKey)
 			}
 
 			assertionObject := &attest.AssertionObject{}
@@ -170,14 +181,138 @@ func TestAssertionService_Verify(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := target.Verify(assertionObject, tt.challenge, tt.clientData)
-			if !IsEquals(tt.wantErr, err) {
-				t.Fatal(err)
-			}
-			if err == nil {
-				if tt.newCounter != got {
+
+			t.Run("VerifyWithExtensions", func(t *testing.T) {
+				state := attest.AssertionState{
+					AppID:     tt.appID,
+					PublicKey: pubkey,
+					Challenge: tt.stored.Challenge,
+					Counter:   tt.stored.Counter,
+				}
+				got, err := (&attest.AssertionService{}).VerifyWithExtensions(assertionObject, tt.challenge, tt.clientData, state)
+				if !IsEquals(tt.wantErr, err) {
+					t.Fatal(err)
+				}
+				if err == nil && got.Counter != tt.newCounter {
+					t.Errorf("invalid new counter want: %d, got: %d", tt.newCounter, got.Counter)
+				}
+			})
+
+			t.Run("Verify (deprecated wrapper)", func(t *testing.T) {
+				target := attest.AssertionService{
+					AppID:     tt.appID,
+					Challenge: tt.stored.Challenge,
+					Counter:   tt.stored.Counter,
+					PublicKey: pubkey,
+				}
+				//nolint:staticcheck // intentionally covering the deprecated API for backward compatibility
+				got, err := target.Verify(assertionObject, tt.challenge, tt.clientData)
+				if !IsEquals(tt.wantErr, err) {
+					t.Fatal(err)
+				}
+				if err == nil && got != tt.newCounter {
 					t.Errorf("invalid new counter want: %d, got: %d", tt.newCounter, got)
 				}
+			})
+		})
+	}
+}
+
+func TestAssertionService_VerifyWithExtensions_Extensions(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		appID     = "1234567890.com.example.myapp"
+		challenge = "example_server_challenge"
+	)
+	clientData := []byte(`{"challenge":"` + challenge + `"}`)
+
+	tests := map[string]struct {
+		authData     []byte
+		wantVersion  string
+		wantCategory attest.ValidationCategory
+	}{
+		"App Store": {
+			authData: merge(
+				sha2(appID),                    // RP ID hash
+				[]byte{0x00},                   // flags: no attested credential data
+				[]byte{0x00, 0x00, 0x00, 0x01}, // counter = 1
+				cborMap( // Extensions
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x04, 0x00, 0x00, 0x00})}, // App Store (little-endian uint32)
+					item{cborText("apple_bundle_version_01"), cborText("42")},
+				),
+			),
+			wantVersion:  "42",
+			wantCategory: attest.ValidationCategoryAppStore,
+		},
+		"TestFlight": {
+			authData: merge(
+				sha2(appID),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x01},
+				cborMap(
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x02, 0x00, 0x00, 0x00})},
+					item{cborText("apple_bundle_version_01"), cborText("7")},
+				),
+			),
+			wantVersion:  "7",
+			wantCategory: attest.ValidationCategoryTestFlight,
+		},
+		"unknown category is kept": {
+			authData: merge(
+				sha2(appID),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x01},
+				cborMap(
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x63, 0x00, 0x00, 0x00})}, // 99
+					item{cborText("apple_bundle_version_01"), cborText("1")},
+				),
+			),
+			wantVersion:  "1",
+			wantCategory: attest.ValidationCategory(99),
+		},
+		"no extensions (iOS 26 and earlier)": {
+			authData: merge(
+				sha2(appID),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x01},
+			),
+			wantVersion:  "",
+			wantCategory: attest.ValidationCategoryInvalid,
+		},
+	}
+
+	state := attest.AssertionState{AppID: appID, PublicKey: &key.PublicKey, Challenge: challenge}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			// The client signs SHA256(nonce), where
+			// nonce = SHA256(authData || SHA256(clientData)).
+			clientDataHash := sha256.Sum256(clientData)
+			h := sha256.New()
+			h.Write(tt.authData)
+			h.Write(clientDataHash[:])
+			nonceHash := sha256.Sum256(h.Sum(nil))
+			sig, err := ecdsa.SignASN1(rand.Reader, key, nonceHash[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			obj := &attest.AssertionObject{Signature: sig, AuthData: tt.authData}
+
+			got, err := (&attest.AssertionService{}).VerifyWithExtensions(obj, challenge, clientData, state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Counter != 1 {
+				t.Errorf("Counter = %d, want 1", got.Counter)
+			}
+			if got.AppleBundleVersion != tt.wantVersion {
+				t.Errorf("AppleBundleVersion = %q, want %q", got.AppleBundleVersion, tt.wantVersion)
+			}
+			if got.AppleValidationCategory != tt.wantCategory {
+				t.Errorf("AppleValidationCategory = %v, want %v", got.AppleValidationCategory, tt.wantCategory)
 			}
 		})
 	}
