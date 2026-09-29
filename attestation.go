@@ -21,14 +21,21 @@ const maxX5CCerts = 16
 // Ref: https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server
 const expectedACLBase64 = "MEAMAjExMDowCQwCb2uhAwEB/zAJDAJvYaEDAQH/MAsMBG9kZWyhAwEB/zAVDARvc2duoAYMBHJzZWMwBaYDAgEB"
 
+// Environment identifies the App Attest environment an attestation was
+// issued in.
 type Environment int
 
-// attestation envirom
+// attestation environment
 const (
-	None       Environment = iota
-	Sandbox                // the App Attest sandbox environment.
-	Production             // The App Attest production environment.
+	None        Environment = iota // zero value; never returned by a successful Verify
+	Development                    // aaguid "appattestdevelop" or "appattestsandbox"
+	Production                     // aaguid "appattest" + 7 zero bytes
 )
+
+// Sandbox is an alias of Development.
+//
+// Deprecated: use Development.
+const Sandbox = Development
 
 type Platform int
 
@@ -40,8 +47,8 @@ const (
 
 func (e Environment) String() string {
 	switch e {
-	case Sandbox:
-		return "Sandbox"
+	case Development:
+		return "Development"
 	case Production:
 		return "Production"
 	}
@@ -286,7 +293,7 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	case "appattest\x00\x00\x00\x00\x00\x00\x00":
 		env = Production
 	case "appattestdevelop", "appattestsandbox":
-		env = Sandbox
+		env = Development
 	default:
 		return nil, fmt.Errorf("invalid aaguid value")
 	}
