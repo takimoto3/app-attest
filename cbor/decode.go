@@ -11,7 +11,6 @@ import (
 )
 
 var (
-	ErrTooLarge                  = errors.New("cbor: data length exceeds buffer bounds")
 	ErrIntegerOverflow           = errors.New("cbor: integer overflow")
 	ErrInvalidString             = errors.New("cbor: invalid UTF-8 text string")
 	ErrInvalidIntType            = errors.New("cbor: expected int type")
@@ -54,7 +53,7 @@ func NewDecoder(data []byte) *Decoder {
 func (d *Decoder) readN(n uint64) ([]byte, error) {
 	remaining := uint64(len(d.data) - d.pos)
 	if n > remaining {
-		return nil, ErrTooLarge
+		return nil, io.ErrUnexpectedEOF
 	}
 	ni := int(n)
 	b := d.data[d.pos : d.pos+ni]
@@ -121,22 +120,20 @@ func (d *Decoder) ReadAdditional(ai byte) (uint64, error) {
 // The caller must pass the major type (0 or 1) and its additional info value.
 // Returns the decoded integer as int64.
 func (d *Decoder) ReadInt(mt MajorType, ai byte) (int64, error) {
-	if mt == UnsignedInt || mt == NegativeInt {
-		n, err := d.ReadAdditional(ai)
-		if err != nil {
-			return 0, err
-		}
-		if n > math.MaxInt64 {
-			return 0, ErrIntegerOverflow
-		}
-		switch mt {
-		case UnsignedInt:
-			return int64(n), nil
-		case NegativeInt:
-			return -1 - int64(n), nil
-		}
+	if mt != UnsignedInt && mt != NegativeInt {
+		return 0, ErrInvalidIntType
 	}
-	return 0, ErrInvalidIntType
+	n, err := d.ReadAdditional(ai)
+	if err != nil {
+		return 0, err
+	}
+	if n > math.MaxInt64 {
+		return 0, ErrIntegerOverflow
+	}
+	if mt == UnsignedInt {
+		return int64(n), nil
+	}
+	return -1 - int64(n), nil
 }
 
 // ReadByteString reads a CBOR byte string (major type 2).
