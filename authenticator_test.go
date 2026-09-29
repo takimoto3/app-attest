@@ -16,7 +16,12 @@ import (
 	"github.com/takimoto3/app-attest/cbor"
 )
 
-func TestAuthenticatorData_WithAppleGuideData(t *testing.T) {
+// TestAuthenticatorData_Unmarshal_AppleGuideExtensions verifies that
+// Unmarshal correctly decodes the iOS 27+ extensions
+// (apple_bundle_version_01 / apple_validation_category_01) from real
+// Apple-signed authData, using parseAppleGuide to decode it via the
+// package's own CBOR path (AttestationObject.UnmarshalCBOR).
+func TestAuthenticatorData_Unmarshal_AppleGuideExtensions(t *testing.T) {
 	rpIDHash := sha256.Sum256([]byte("1234567890.com.example.myapp"))
 	want := attest.AuthenticatorData{
 		RPIDHash: rpIDHash[:],
@@ -51,9 +56,9 @@ func TestAuthenticatorData_WithAppleGuideData(t *testing.T) {
 		AppleBundleVersion:      "1",
 		AppleValidationCategory: 1,
 	}
-	data := getAuthDataFromAppleGuide(t)
+	attestObj := parseAppleGuide(t)
 	authData := attest.AuthenticatorData{}
-	if err := authData.Unmarshal(data); err != nil {
+	if err := authData.Unmarshal(attestObj.AuthData); err != nil {
 		t.Fatal(err)
 	}
 
