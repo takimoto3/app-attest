@@ -20,7 +20,13 @@ func TestAttestationService_Verify(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	pool, err := certs.LoadCertFiles("testdata/Apple_App_Attestation_Root_CA.pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	tests := map[string]struct {
+		rootCert       *x509.CertPool
 		appID          string
 		attestData     []byte
 		clientDataHash []byte
@@ -30,6 +36,7 @@ func TestAttestationService_Verify(t *testing.T) {
 		wantEnv        attest.Environment
 	}{
 		"Success Case": {
+			pool,
 			testData.Attestation.AppID,
 			testData.Attestation.Attestation,
 			testData.Attestation.ClientDataHash,
@@ -39,6 +46,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			testData.Attestation.Environment,
 		},
 		"Error Case: invalid AppID use": {
+			pool,
 			"org.sample.AttestSample",
 			testData.Attestation.Attestation,
 			testData.Attestation.ClientDataHash,
@@ -48,6 +56,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			testData.Attestation.Environment,
 		},
 		"Error Case:invalid challenge use": {
+			pool,
 			testData.Attestation.AppID,
 			testData.Attestation.Attestation,
 			[]byte("xxxxxxxxxxxxxxxx"),
@@ -57,6 +66,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			testData.Attestation.Environment,
 		},
 		"Error Case:invalid keyID use": {
+			pool,
 			testData.Attestation.AppID,
 			testData.Attestation.Attestation,
 			testData.Attestation.ClientDataHash,
@@ -66,11 +76,22 @@ func TestAttestationService_Verify(t *testing.T) {
 			testData.Attestation.Environment,
 		},
 		"Error Case: certificate expired": {
+			pool,
 			testData.Attestation.AppID,
 			testData.Attestation.Attestation,
 			testData.Attestation.ClientDataHash,
 			testData.Attestation.KeyId,
 			errors.New("invalid certificate: x509: certificate has expired or is not yet valid"),
+			testData.Attestation.PublicKey,
+			testData.Attestation.Environment,
+		},
+		"Error Case: nil root certificate pool": {
+			nil,
+			testData.Attestation.AppID,
+			testData.Attestation.Attestation,
+			testData.Attestation.ClientDataHash,
+			testData.Attestation.KeyId,
+			errors.New("root certificate pool is nil"),
 			testData.Attestation.PublicKey,
 			testData.Attestation.Environment,
 		},
@@ -84,12 +105,7 @@ func TestAttestationService_Verify(t *testing.T) {
 				testtime.SetTime(t, testData.Attestation.ExpiredDate)
 			}
 
-			pool, err := certs.LoadCertFiles("testdata/Apple_App_Attestation_Root_CA.pem")
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			target := attest.NewAttestationService(pool, tt.appID)
+			target := attest.NewAttestationService(tt.rootCert, tt.appID)
 
 			attestObject := attest.AttestationObject{}
 			if err := attestObject.UnmarshalCBOR(tt.attestData); err != nil {

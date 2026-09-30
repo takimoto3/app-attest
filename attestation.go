@@ -146,6 +146,9 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 }
 
 func (service *AttestationService) verify(platform Platform, attestObj *AttestationObject, clientDataHash, keyID []byte) (*Result, error) {
+	if service.RootCertPool == nil {
+		return nil, errors.New("root certificate pool is nil")
+	}
 	if attestObj.Format != "apple-appattest" {
 		return nil, fmt.Errorf("invalid attestation format: %q", attestObj.Format)
 	}
@@ -156,7 +159,6 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 		return nil, errors.New("AttStmt: empty data")
 	}
 	receipt := attestObj.AttStmt.Receipt
-	roots := service.RootCertPool.Clone()
 	intermediates := x509.NewCertPool()
 
 	x5chain := attestObj.AttStmt.X5C
@@ -178,7 +180,7 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	// 1. Verify that the x5c array contains the intermediate and leaf certificates for App Attest,
 	//  starting from the credential certificate in the first data buffer in the array (credcert).
 	//  Verify the validity of the certificates using Apple’s App Attest root certificate.
-	err = verifyCredentialCertificate(credCert, roots, intermediates)
+	err = verifyCredentialCertificate(credCert, service.RootCertPool, intermediates)
 	if err != nil {
 		return nil, fmt.Errorf("invalid certificate: %w", err)
 	}
