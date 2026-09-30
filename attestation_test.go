@@ -179,9 +179,10 @@ func TestAttestationObject_UnmarshalCBOR_Op(t *testing.T) {
 func BenchmarkAttestationObject_UnmarshalCBOR_Op(b *testing.B) {
 	data := testutils.DecodeB64(AttestationObjectB64)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; b.Loop(); i++ {
+	for b.Loop() {
 		var ao attest.AttestationObject
 		if err := ao.UnmarshalCBOR(data); err != nil {
 			b.Fatal(err)

@@ -341,9 +341,10 @@ func TestAssertionObject_UnmarshalCBOR(t *testing.T) {
 func BenchmarkAssertionObject_UnmarshalCBOR(b *testing.B) {
 	data := testutils.DecodeB64(AssertionObjectB64)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; b.Loop(); i++ {
+	for b.Loop() {
 		var ao attest.AssertionObject
 		if err := ao.UnmarshalCBOR(data); err != nil {
 			b.Fatal(err)

@@ -236,89 +236,110 @@ var benchByteStringHexLong = "581004112233445566778899aabbccddeeff"
 var benchTextData = []byte{0x63, 'f', 'o', 'o'}
 var benchTextDataLong = []byte{0x78, 0x0b, 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}
 
+var (
+	sinkInt   int64
+	sinkBytes []byte
+	sinkStr   string
+)
+
 func BenchmarkDecodeIntSmall(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchIntSmall)
 		mt, ai, _ := dec.ReadHeader()
-		_, _ = dec.ReadInt(mt, ai)
+		sinkInt, _ = dec.ReadInt(mt, ai)
 	}
 }
 
 func BenchmarkDecodeIntAdd24(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchIntAdd24)
 		mt, ai, _ := dec.ReadHeader()
-		_, _ = dec.ReadInt(mt, ai)
+		sinkInt, _ = dec.ReadInt(mt, ai)
 	}
 }
 
 func BenchmarkDecodeIntAdd25(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchIntAdd25)
 		mt, ai, _ := dec.ReadHeader()
-		_, _ = dec.ReadInt(mt, ai)
+		sinkInt, _ = dec.ReadInt(mt, ai)
 	}
 }
 func BenchmarkDecodeByteString(b *testing.B) {
-	data, _ := hex.DecodeString(benchByteStringHex)
-	for i := 0; b.Loop(); i++ {
+	data, err := hex.DecodeString(benchByteStringHex)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
 		dec := NewDecoder(data)
 		mt, ai, _ := dec.ReadHeader()
 		if mt != ByteString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		_, _ = dec.ReadByteString(ai)
+		sinkBytes, _ = dec.ReadByteString(ai)
 	}
 }
 
 func BenchmarkDecodeByteStringLong(b *testing.B) {
-	data, _ := hex.DecodeString(benchByteStringHexLong)
-	for i := 0; b.Loop(); i++ {
+	data, err := hex.DecodeString(benchByteStringHexLong)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
 		dec := NewDecoder(data)
 		mt, ai, _ := dec.ReadHeader()
 		if mt != ByteString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		_, _ = dec.ReadByteString(ai)
+		sinkBytes, _ = dec.ReadByteString(ai)
 	}
 }
 
-var sink string
-
 func BenchmarkDecodeTextString(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchTextData)
 		mt, ai, _ := dec.ReadHeader()
 		if mt != TextString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		sink, _ = dec.ReadTextString(ai)
+		sinkStr, _ = dec.ReadTextString(ai)
 	}
 }
 
 func BenchmarkDecodeTextStringLong(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchTextDataLong)
 		mt, ai, _ := dec.ReadHeader()
 		if mt != TextString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		sink, _ = dec.ReadTextString(ai)
+		sinkStr, _ = dec.ReadTextString(ai)
 	}
 }
 
 func BenchmarkDecodeUnsafeTextString(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchTextData)
 		_, ai, _ := dec.ReadHeader()
-		sink, _ = dec.ReadUnsafeTextString(ai)
+		sinkStr, _ = dec.ReadUnsafeTextString(ai)
 	}
 }
 
 func BenchmarkDecodeUnsafeTextStringLong(b *testing.B) {
+	b.ReportAllocs()
 	for i := 0; b.Loop(); i++ {
 		dec := NewDecoder(benchTextDataLong)
 		_, ai, _ := dec.ReadHeader()
-		sink, _ = dec.ReadUnsafeTextString(ai)
+		sinkStr, _ = dec.ReadUnsafeTextString(ai)
 	}
 }
