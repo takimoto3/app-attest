@@ -182,14 +182,14 @@ func TestAssertionService_Verify(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			t.Run("VerifyWithExtensions", func(t *testing.T) {
+			t.Run("VerifyWithState", func(t *testing.T) {
 				state := attest.AssertionState{
 					AppID:     tt.appID,
 					PublicKey: pubkey,
 					Challenge: tt.stored.Challenge,
 					Counter:   tt.stored.Counter,
 				}
-				got, err := (&attest.AssertionService{}).VerifyWithExtensions(assertionObject, tt.challenge, tt.clientData, state)
+				got, err := (&attest.AssertionService{}).VerifyWithState(assertionObject, tt.challenge, tt.clientData, state)
 				if !IsEquals(tt.wantErr, err) {
 					t.Fatal(err)
 				}
@@ -218,7 +218,7 @@ func TestAssertionService_Verify(t *testing.T) {
 	}
 }
 
-func TestAssertionService_VerifyWithExtensions_Extensions(t *testing.T) {
+func TestAssertionService_VerifyWithState_Extensions(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -301,7 +301,7 @@ func TestAssertionService_VerifyWithExtensions_Extensions(t *testing.T) {
 			}
 			obj := &attest.AssertionObject{Signature: sig, AuthData: tt.authData}
 
-			got, err := (&attest.AssertionService{}).VerifyWithExtensions(obj, challenge, clientData, state)
+			got, err := (&attest.AssertionService{}).VerifyWithState(obj, challenge, clientData, state)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -55,7 +55,7 @@ type AssertionResult struct {
 
 // Verify checks a single assertion object and returns the counter.
 //
-// Deprecated: Use VerifyWithExtensions instead. It returns the
+// Deprecated: Use VerifyWithState instead. It returns the
 // Apple-attested bundle version and validation category (iOS 27+), and
 // takes AppID, PublicKey, Challenge and Counter as an AssertionState
 // argument rather than from AssertionService fields, so a single
@@ -74,14 +74,14 @@ func (service *AssertionService) Verify(assertObject *AssertionObject, challenge
 	return result.Counter, nil
 }
 
-// VerifyWithExtensions checks a single assertion object and returns the
+// VerifyWithState checks a single assertion object and returns the
 // verification result, including the sign counter and any Apple-attested
 // app-version extensions (iOS 27+).
 // challenge is the value the client returned; extract it from clientData
 // itself (the bytes covered by the signature), not from any other part of
 // the request. state is read-only: persist AssertionResult.Counter
 // yourself.
-func (service *AssertionService) VerifyWithExtensions(assertObject *AssertionObject, challenge string, clientData []byte, state AssertionState) (*AssertionResult, error) {
+func (service *AssertionService) VerifyWithState(assertObject *AssertionObject, challenge string, clientData []byte, state AssertionState) (*AssertionResult, error) {
 	return service.verify(assertObject, challenge, clientData, state)
 }
 
