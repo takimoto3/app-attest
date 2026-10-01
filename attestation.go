@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
-	"encoding/base64"
 	"errors"
 	"fmt"
 
@@ -15,11 +14,11 @@ import (
 
 const maxX5CCerts = 16
 
-// expectedACLBase64 is the expected access policy hash (aclBlob) for macOS App Attest keys
+// expectedACL is the expected access policy hash (aclBlob) for macOS App Attest keys
 // under SIP and Full Security mode (OID 1.2.840.113635.100.8.6).
 //
 // Ref: https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server
-const expectedACLBase64 = "MEAMAjExMDowCQwCb2uhAwEB/zAJDAJvYaEDAQH/MAsMBG9kZWyhAwEB/zAVDARvc2duoAYMBHJzZWMwBaYDAgEB"
+var expectedACL = []byte{0x30, 0x40, 0xc, 0x2, 0x31, 0x31, 0x30, 0x3a, 0x30, 0x9, 0xc, 0x2, 0x6f, 0x6b, 0xa1, 0x3, 0x1, 0x1, 0xff, 0x30, 0x9, 0xc, 0x2, 0x6f, 0x61, 0xa1, 0x3, 0x1, 0x1, 0xff, 0x30, 0xb, 0xc, 0x4, 0x6f, 0x64, 0x65, 0x6c, 0xa1, 0x3, 0x1, 0x1, 0xff, 0x30, 0x15, 0xc, 0x4, 0x6f, 0x73, 0x67, 0x6e, 0xa0, 0x6, 0xc, 0x4, 0x72, 0x73, 0x65, 0x63, 0x30, 0x5, 0xa6, 0x3, 0x2, 0x1, 0x1}
 
 // Environment identifies the App Attest environment an attestation was
 // issued in.
@@ -128,16 +127,10 @@ type AttestationService struct {
 
 	// App Identifier (format: teamID + "." + bundleID)
 	AppID string
-
-	ExpectedACLBlob []byte
 }
 
 func NewAttestationService(pool *x509.CertPool, appID string) *AttestationService {
-	expectedACLBlob, err := base64.StdEncoding.DecodeString(expectedACLBase64)
-	if err != nil {
-		panic(err)
-	}
-	return &AttestationService{RootCertPool: pool, AppID: appID, ExpectedACLBlob: expectedACLBlob}
+	return &AttestationService{RootCertPool: pool, AppID: appID}
 }
 
 // Verify validate a single attestation object and return result object.
@@ -248,7 +241,7 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 		if octetString.Class != asn1.ClassUniversal || octetString.Tag != asn1.TagOctetString {
 			return nil, fmt.Errorf("invalid aclBlob extension value")
 		}
-		if !bytes.Equal(service.ExpectedACLBlob, octetString.Bytes) {
+		if !bytes.Equal(expectedACL, octetString.Bytes) {
 			return nil, fmt.Errorf("aclBlob does not match expected value")
 		}
 	}

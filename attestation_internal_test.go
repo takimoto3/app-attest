@@ -6,10 +6,24 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 )
+
+func TestExpectedACL(t *testing.T) {
+	const expectedACLBase64 = "MEAMAjExMDowCQwCb2uhAwEB/zAJDAJvYaEDAQH/MAsMBG9kZWyhAwEB/zAVDARvc2duoAYMBHJzZWMwBaYDAgEB"
+	want, err := base64.StdEncoding.DecodeString(expectedACLBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(want, expectedACL); diff != "" {
+		t.Errorf("expectedACL mismatch (-want +got):\n%s", diff)
+	}
+}
 
 func TestVerifyCredentialCertificateAcceptsNonTLSExtendedKeyUsage(t *testing.T) {
 	now := time.Now()
