@@ -262,11 +262,8 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 
 	// prepare AuthenticatorData
 	authData := AuthenticatorData{}
-	if err = authData.Unmarshal(attestObj.AuthData); err != nil {
+	if err = authData.Unmarshal(attestObj.AuthData, true); err != nil {
 		return nil, fmt.Errorf("authenticator data decoding failed")
-	}
-	if !authData.HasAttestedCredentialData() {
-		return nil, fmt.Errorf("attestation missing attested credential data flag")
 	}
 
 	// 6. Compute the SHA256 hash of your app’s App ID, and verify that this is the same as the authenticator data’s RP ID hash.

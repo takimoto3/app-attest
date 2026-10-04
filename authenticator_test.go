@@ -58,30 +58,12 @@ func TestAuthenticatorData_Unmarshal_AppleGuideExtensions(t *testing.T) {
 	}
 	attestObj := parseAppleGuide(t)
 	authData := attest.AuthenticatorData{}
-	if err := authData.Unmarshal(attestObj.AuthData); err != nil {
+	if err := authData.Unmarshal(attestObj.AuthData, true); err != nil {
 		t.Fatal(err)
 	}
 
 	if diff := cmp.Diff(want, authData); diff != "" {
 		t.Errorf("ParseAuthenticatorData mismatch (-want +got):\n%s", diff)
-	}
-}
-
-func TestAuthenticatorData_HasAttestedCredentialData(t *testing.T) {
-	tests := map[string]struct {
-		target *attest.AuthenticatorData
-		want   bool
-	}{
-		"true case":  {&attest.AuthenticatorData{Flags: 0x40}, true},
-		"false case": {&attest.AuthenticatorData{Flags: 0x10}, false},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			if got := tt.target.HasAttestedCredentialData(); tt.want != got {
-				t.Errorf("HasAttestedCredentialData() invalid result want %v got:%v", tt.want, got)
-			}
-		})
 	}
 }
 
@@ -206,9 +188,10 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 	}
 
 	tests := map[string]struct {
-		data    []byte
-		want    *attest.AuthenticatorData
-		wantErr error
+		data        []byte
+		requireCred bool
+		want        *attest.AuthenticatorData
+		wantErr     error
 	}{
 		"valid authenticator data": {
 			data: merge(
@@ -230,6 +213,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 					item{cborText("apple_bundle_version_01"), cborText("1.0")},                                // apple_bundle_version_01
 				),
 			),
+			requireCred: true,
 			want: &attest.AuthenticatorData{
 				RPIDHash: sha2("1234567890.appleID"),
 				Flags:    0x40,
@@ -265,6 +249,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 					item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
 				),
 			),
+			requireCred: true,
 			want: &attest.AuthenticatorData{
 				RPIDHash: sha2("1234567890.appleID"),
 				Flags:    0x40,
@@ -344,7 +329,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				[]byte("appattest\x00\x00\x00\x00\x00\x00\x00"),
 				[]byte{0x00, 0xFF}, // claims 255 bytes but none follow
 			),
-			wantErr: fmt.Errorf("failed to read credential ID"),
+			requireCred: true,
+			wantErr:     fmt.Errorf("failed to read credential ID"),
 		},
 		"unknown extension key": {
 			data: merge(
@@ -369,7 +355,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 					item{cborUint(9), cborUint(2)}, // unknown key type
 				),
 			),
-			wantErr: fmt.Errorf("%w: %d", attest.ErrUnknownKey, 9),
+			requireCred: true,
+			wantErr:     fmt.Errorf("%w: %d", attest.ErrUnknownKey, 9),
 		},
 		"extensions not a map": {
 			data: merge(
@@ -400,7 +387,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 					item{cborText("apple_bundle_version_01"), cborText("1.0")},           // apple_bundle_version_01
 				),
 			),
-			wantErr: fmt.Errorf("expected string map key at index %d, got major type %d", 0, cbor.ByteString),
+			requireCred: true,
+			wantErr:     fmt.Errorf("expected string map key at index %d, got major type %d", 0, cbor.ByteString),
 		},
 		"trailing data after extensions": {
 			data: merge(
@@ -419,7 +407,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			auth := &attest.AuthenticatorData{}
-			err := auth.Unmarshal(tt.data)
+			err := auth.Unmarshal(tt.data, tt.requireCred)
 			if err != nil {
 				if tt.wantErr == nil {
 					t.Fatalf("unexpected error: %v", err)

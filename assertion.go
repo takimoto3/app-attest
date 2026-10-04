@@ -15,6 +15,15 @@ var (
 	ErrUnmatchRPIDHash  = errors.New("RP Hash mismatch")
 )
 
+// cborAssertionKey is a bit flag for a required CBOR map key of AssertionObject.
+type cborAssertionKey byte
+
+const (
+	keySignature cborAssertionKey = 1 << iota
+	keyAuthData
+	requiredKeys = keySignature | keyAuthData
+)
+
 type AssertionObject struct {
 	// ASN.1 Encoded as a Sequence of two integers
 	Signature []byte `cbor:"signature"`
@@ -31,6 +40,10 @@ type AssertionService struct {
 // AssertionState is the server-side state for the registered key being
 // verified. Load it from your own storage for each request; do not
 // derive AppID from the client's request.
+//
+// Challenge generation, expiry and single use are the caller's
+// responsibility; this package only compares it with the value passed to
+// VerifyWithState.
 type AssertionState struct {
 	AppID     string           // "<TeamID>.<BundleID>" recorded at attestation time
 	PublicKey *ecdsa.PublicKey // key saved from the attestation
@@ -39,8 +52,9 @@ type AssertionState struct {
 }
 
 type AssertionResult struct {
-	// Counter is the new sign count. Callers must persist it and reject
-	// any future assertion whose counter isn't strictly greater.
+	// Counter is the new sign count. Persist it with an atomic
+	// compare-and-set, and reject any future assertion whose counter isn't
+	// strictly greater.
 	Counter uint32
 
 	// AppleBundleVersion is the attested CFBundleVersion. Empty on iOS 26
@@ -81,13 +95,20 @@ func (service *AssertionService) Verify(assertObject *AssertionObject, challenge
 // itself (the bytes covered by the signature), not from any other part of
 // the request. state is read-only: persist AssertionResult.Counter
 // yourself.
+//
+// Error messages may contain the expected challenge; do not return them
+// to clients. The result is nil on error.
 func (service *AssertionService) VerifyWithState(assertObject *AssertionObject, challenge string, clientData []byte, state AssertionState) (*AssertionResult, error) {
 	return service.verify(assertObject, challenge, clientData, state)
 }
 
 func (service *AssertionService) verify(assertObject *AssertionObject, challenge string, clientData []byte, state AssertionState) (*AssertionResult, error) {
-	if state.PublicKey == nil {
-		return nil, errors.New("assertion state: PublicKey is nil")
+	// Input checks: reject unusable input before touching crypto.
+	if assertObject == nil {
+		return nil, errors.New("assertion object is nil")
+	}
+	if !isKeyComplete(state.PublicKey) {
+		return nil, errors.New("assertion state: PublicKey is nil or incomplete")
 	}
 
 	// 1. Compute clientDataHash as the SHA256 hash of clientData.
@@ -107,7 +128,7 @@ func (service *AssertionService) verify(assertObject *AssertionObject, challenge
 
 	// 4. Compute the SHA256 hash of the client’s App ID, and verify that it matches the RP ID in the authenticator data.
 	authData := AuthenticatorData{}
-	if err := authData.Unmarshal(assertObject.AuthData); err != nil {
+	if err := authData.Unmarshal(assertObject.AuthData, false); err != nil {
 		return nil, fmt.Errorf("authenticator data decoding failed: %w", err)
 	}
 	appIDHash := sha256.Sum256([]byte(state.AppID))
@@ -136,6 +157,8 @@ func (service *AssertionService) verify(assertObject *AssertionObject, challenge
 //
 // Returns an error if the data is malformed or contains unexpected types.
 func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
+	var gotKeys cborAssertionKey
+
 	dec := cbor.NewDecoder(data)
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
@@ -174,6 +197,7 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 				return fmt.Errorf(`failed to read signature bytes (key "signature"): %w`, err)
 			}
 			ao.Signature = val
+			gotKeys |= keySignature
 		case "authenticatorData":
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
@@ -187,9 +211,18 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 				return fmt.Errorf(`failed to read authData bytes (key "authenticatorData"): %w`, err)
 			}
 			ao.AuthData = val
+			gotKeys |= keyAuthData
 		default:
 			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
 		}
 	}
+	if missing := requiredKeys &^ gotKeys; missing != 0 {
+		return fmt.Errorf("missing required keys: %#b", missing)
+	}
+
 	return nil
+}
+
+func isKeyComplete(k *ecdsa.PublicKey) bool {
+	return k != nil && k.Curve != nil && k.X != nil && k.Y != nil
 }

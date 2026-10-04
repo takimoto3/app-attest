@@ -11,14 +11,6 @@ import (
 	"github.com/takimoto3/app-attest/cbor"
 )
 
-// https://www.w3.org/TR/webauthn-2/#flags
-const (
-	//	UserPresent  byte = 1 << 0 // bit0: User Present (UP)
-	//	UserVerified byte = 1 << 2 // bit2: User Verified (UV)
-	Attested byte = 1 << 6 // bit6: Attested credential data included (AT)
-// Extensions   byte = 1 << 7 // bit7: Extension data included (ED)
-)
-
 const minAuthDataLen = 37
 
 var ErrUnknownKey = errors.New("authdata: unknown key")
@@ -38,11 +30,7 @@ type AttestedCredential struct {
 	CoseKey      CoseKey
 }
 
-func (auth *AuthenticatorData) HasAttestedCredentialData() bool {
-	return auth.Flags&Attested != 0
-}
-
-func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
+func (auth *AuthenticatorData) Unmarshal(rawBytes []byte, requireCred bool) error {
 	if minAuthDataLen > len(rawBytes) {
 		return fmt.Errorf("authenticator data length too short: got %d bytes", len(rawBytes))
 	}
@@ -63,33 +51,31 @@ func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
 	}
 	auth.Counter = counter
 
-	if auth.HasAttestedCredentialData() {
-		if len(rawBytes) > minAuthDataLen {
-			aaguid, err := r.ReadBytes(16)
-			if err != nil {
-				return fmt.Errorf("failed to read AAGUID: %w", err)
-			}
-			credIDLen, err := r.ReadUint16()
-			if err != nil {
-				return fmt.Errorf("failed to read credential ID length: %w", err)
-			}
-			credID, err := r.ReadBytes(int(credIDLen))
-			if err != nil {
-				return fmt.Errorf("failed to read credential ID: %w", err)
-			}
-
-			auth.CredentialData = AttestedCredential{
-				AAGUID:       aaguid,
-				CredentialID: credID,
-			}
-
-			dec := cbor.NewDecoder(r.UnreadBytes())
-			auth.CredentialData.CoseKey = CoseKey{}
-			if err := auth.CredentialData.CoseKey.UnmarshalCBOR(dec); err != nil {
-				return err
-			}
-			r.Advance(len(r.UnreadBytes()) - dec.Len())
+	if requireCred {
+		aaguid, err := r.ReadBytes(16)
+		if err != nil {
+			return fmt.Errorf("failed to read AAGUID: %w", err)
 		}
+		credIDLen, err := r.ReadUint16()
+		if err != nil {
+			return fmt.Errorf("failed to read credential ID length: %w", err)
+		}
+		credID, err := r.ReadBytes(int(credIDLen))
+		if err != nil {
+			return fmt.Errorf("failed to read credential ID: %w", err)
+		}
+
+		auth.CredentialData = AttestedCredential{
+			AAGUID:       aaguid,
+			CredentialID: credID,
+		}
+
+		dec := cbor.NewDecoder(r.UnreadBytes())
+		auth.CredentialData.CoseKey = CoseKey{}
+		if err := auth.CredentialData.CoseKey.UnmarshalCBOR(dec); err != nil {
+			return err
+		}
+		r.Advance(len(r.UnreadBytes()) - dec.Len())
 	}
 	if r.Len() > 0 {
 		dec := cbor.NewDecoder(r.UnreadBytes())

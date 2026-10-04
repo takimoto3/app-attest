@@ -6,222 +6,47 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"errors"
 	"fmt"
-	"reflect"
+	"io"
+	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	attest "github.com/takimoto3/app-attest"
-	"github.com/takimoto3/app-attest/testutils"
+	"github.com/takimoto3/app-attest/cbor"
 )
 
-type StoredData struct {
-	Challenge string
-	Counter   uint32
+func newAssertionObj(tb testing.TB, key *ecdsa.PrivateKey, authData, clientData []byte) *attest.AssertionObject {
+	tb.Helper()
+
+	clientDataHash := sha256.Sum256(clientData)
+	hash := sha256.New()
+	hash.Write(authData)
+	hash.Write(clientDataHash[:])
+	digest := sha256.Sum256(hash.Sum(nil))
+
+	sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return &attest.AssertionObject{Signature: sig, AuthData: authData}
 }
 
-func TestAssertionService_Verify(t *testing.T) {
-	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	genPubKeyData, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	testData, err := testutils.LoadTestData()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	tests := map[string]struct {
-		appID      string
-		assertData []byte
-		clientData []byte
-		challenge  string
-		stored     StoredData
-		newCounter uint32
-		pubkey     []byte
-		wantErr    error
-	}{
-		"Success Case": {
-			testData.Assertion.AppID,
-			testData.Assertion.Assertion,
-			testData.Assertion.ClientData,
-			string(testData.Assertion.Challenge),
-			StoredData{
-				Challenge: string(testData.Assertion.Challenge),
-				Counter:   0,
-			},
-			1,
-			testData.Assertion.PublicKey,
-			nil,
-		},
-		"Error Case:different public key use": {
-			testData.Assertion.AppID,
-			testData.Assertion.Assertion,
-			testData.Assertion.ClientData,
-			string(testData.Assertion.Challenge),
-			StoredData{
-				Challenge: string(testData.Assertion.Challenge),
-				Counter:   0,
-			},
-			1,
-			genPubKeyData,
-			attest.ErrInvalidSignature,
-		},
-		"Error Case:empty request body use": {
-			testData.Assertion.AppID,
-			testData.Assertion.Assertion,
-			[]byte{},
-			string(testData.Assertion.Challenge),
-			StoredData{
-				Challenge: string(testData.Assertion.Challenge),
-				Counter:   0,
-			},
-			0,
-			testData.Assertion.PublicKey,
-			attest.ErrInvalidSignature,
-		},
-		"Error Case:client data contains invalid challenge use": {
-			testData.Assertion.AppID,
-			testData.Assertion.Assertion,
-			bytes.Replace(testData.Assertion.ClientData, testData.Assertion.Challenge, []byte("xxxxxxxxxxxxxxxx"), 1),
-			string(testData.Assertion.Challenge),
-			StoredData{
-				Challenge: string(testData.Assertion.Challenge),
-				Counter:   0,
-			},
-			0,
-			testData.Assertion.PublicKey,
-			attest.ErrInvalidSignature,
-		},
-		"Error Case:invalid challenge use": {
-			testData.Assertion.AppID,
-			testData.Assertion.Assertion,
-			testData.Assertion.ClientData,
-			"xxxxxxxxxxxxxxxx",
-			StoredData{
-				Challenge: string(testData.Assertion.Challenge),
-				Counter:   0,
-			},
-			1,
-			testData.Assertion.PublicKey,
-			fmt.Errorf("invalid challenge expected: %s, received: xxxxxxxxxxxxxxxx", string(testData.Assertion.Challenge)),
-		},
-		"Error Case:invalid stored challenge use": {
-			testData.Assertion.AppID,
-			testData.Assertion.Assertion,
-			testData.Assertion.ClientData,
-			string(testData.Assertion.Challenge),
-			StoredData{
-				Challenge: "xxxxxxxxxxxxxxxx",
-				Counter:   0,
-			},
-			1,
-			testData.Assertion.PublicKey,
-			fmt.Errorf("invalid challenge expected: xxxxxxxxxxxxxxxx, received: %s", string(testData.Assertion.Challenge)),
-		},
-		"Error Case:invalid AppID use": {
-			"org.sample.AttestSample",
-			testData.Assertion.Assertion,
-			testData.Assertion.ClientData,
-			string(testData.Assertion.Challenge),
-			StoredData{
-				Challenge: string(testData.Assertion.Challenge),
-				Counter:   0,
-			},
-			1,
-			testData.Assertion.PublicKey,
-			attest.ErrUnmatchRPIDHash,
-		},
-		"Error Case:lower counter use": {
-			testData.Assertion.AppID,
-			testData.Assertion.Assertion,
-			testData.Assertion.ClientData,
-			string(testData.Assertion.Challenge),
-			StoredData{
-				Challenge: string(testData.Assertion.Challenge),
-				Counter:   3,
-			},
-			1,
-			testData.Assertion.PublicKey,
-			fmt.Errorf("counter was not greater than previous [1, previous: 3]"),
-		},
-		"Error Case:nil public key": {
-			testData.Assertion.AppID,
-			testData.Assertion.Assertion,
-			testData.Assertion.ClientData,
-			string(testData.Assertion.Challenge),
-			StoredData{
-				Challenge: string(testData.Assertion.Challenge),
-				Counter:   0,
-			},
-			1,
-			nil, // pubkey
-			errors.New("assertion state: PublicKey is nil"),
-		},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			var pubkey *ecdsa.PublicKey
-			if tt.pubkey != nil {
-				pubany, err := x509.ParsePKIXPublicKey(tt.pubkey)
-				if err != nil {
-					t.Fatal(err)
-				}
-				pubkey = pubany.(*ecdsa.PublicKey)
-			}
-
-			assertionObject := &attest.AssertionObject{}
-			err = assertionObject.UnmarshalCBOR(tt.assertData)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			t.Run("VerifyWithState", func(t *testing.T) {
-				state := attest.AssertionState{
-					AppID:     tt.appID,
-					PublicKey: pubkey,
-					Challenge: tt.stored.Challenge,
-					Counter:   tt.stored.Counter,
-				}
-				got, err := (&attest.AssertionService{}).VerifyWithState(assertionObject, tt.challenge, tt.clientData, state)
-				if !IsEquals(tt.wantErr, err) {
-					t.Fatal(err)
-				}
-				if err == nil && got.Counter != tt.newCounter {
-					t.Errorf("invalid new counter want: %d, got: %d", tt.newCounter, got.Counter)
-				}
-			})
-
-			t.Run("Verify (deprecated wrapper)", func(t *testing.T) {
-				target := attest.AssertionService{
-					AppID:     tt.appID,
-					Challenge: tt.stored.Challenge,
-					Counter:   tt.stored.Counter,
-					PublicKey: pubkey,
-				}
-				//nolint:staticcheck // intentionally covering the deprecated API for backward compatibility
-				got, err := target.Verify(assertionObject, tt.challenge, tt.clientData)
-				if !IsEquals(tt.wantErr, err) {
-					t.Fatal(err)
-				}
-				if err == nil && got != tt.newCounter {
-					t.Errorf("invalid new counter want: %d, got: %d", tt.newCounter, got)
-				}
-			})
-		})
-	}
-}
-
-func TestAssertionService_VerifyWithState_Extensions(t *testing.T) {
+func TestAssertionService_VerifyWithState(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
+	}
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 末尾1バイトを反転したコピーを返す
+	flip := func(b []byte) []byte {
+		c := bytes.Clone(b)
+		c[len(c)-1] ^= 0xff
+		return c
 	}
 	const (
 		appID     = "1234567890.com.example.myapp"
@@ -229,122 +54,550 @@ func TestAssertionService_VerifyWithState_Extensions(t *testing.T) {
 	)
 	clientData := []byte(`{"challenge":"` + challenge + `"}`)
 
+	assertionObj := newAssertionObj(t, key,
+		merge(
+			sha2(appID),                    // RP ID hash
+			[]byte{0x40},                   // flags
+			[]byte{0x00, 0x00, 0x00, 0x01}, // counter
+			cborMap( // Extensions
+				item{cborText("apple_validation_category_01"), cborBytes([]byte{0x04, 0x00, 0x00, 0x00})}, // App Store (little-endian uint32)
+				item{cborText("apple_bundle_version_01"), cborText("42")},
+			),
+		), clientData)
+
 	tests := map[string]struct {
-		authData     []byte
-		wantVersion  string
-		wantCategory attest.ValidationCategory
+		assertionObj *attest.AssertionObject
+		challenge    string
+		clientData   []byte
+		state        attest.AssertionState
+		want         *attest.AssertionResult
+		wantErr      error
 	}{
-		"App Store": {
-			authData: merge(
-				sha2(appID),                    // RP ID hash
-				[]byte{0x00},                   // flags: no attested credential data
-				[]byte{0x00, 0x00, 0x00, 0x01}, // counter = 1
-				cborMap( // Extensions
-					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x04, 0x00, 0x00, 0x00})}, // App Store (little-endian uint32)
-					item{cborText("apple_bundle_version_01"), cborText("42")},
-				),
-			),
-			wantVersion:  "42",
-			wantCategory: attest.ValidationCategoryAppStore,
+		"success": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			want: &attest.AssertionResult{
+				Counter:                 1,
+				AppleBundleVersion:      "42",
+				AppleValidationCategory: attest.ValidationCategoryAppStore,
+			},
 		},
-		"TestFlight": {
-			authData: merge(
-				sha2(appID),
-				[]byte{0x00},
-				[]byte{0x00, 0x00, 0x00, 0x01},
-				cborMap(
-					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x02, 0x00, 0x00, 0x00})},
-					item{cborText("apple_bundle_version_01"), cborText("7")},
-				),
-			),
-			wantVersion:  "7",
-			wantCategory: attest.ValidationCategoryTestFlight,
+		"success: no extensions": {
+			assertionObj: newAssertionObj(t, key,
+				merge(
+					sha2(appID),                    // RP ID hash
+					[]byte{0x00},                   // flags
+					[]byte{0x00, 0x00, 0x00, 0x01}, // counter
+				), clientData),
+			challenge:  challenge,
+			clientData: clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			want: &attest.AssertionResult{
+				Counter:                 1,
+				AppleBundleVersion:      "",
+				AppleValidationCategory: attest.ValidationCategoryInvalid,
+			},
 		},
-		"unknown category is kept": {
-			authData: merge(
-				sha2(appID),
-				[]byte{0x00},
-				[]byte{0x00, 0x00, 0x00, 0x01},
-				cborMap(
-					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x63, 0x00, 0x00, 0x00})}, // 99
-					item{cborText("apple_bundle_version_01"), cborText("1")},
-				),
-			),
-			wantVersion:  "1",
-			wantCategory: attest.ValidationCategory(99),
+		"error: assertion object is nil": {
+			challenge:  challenge,
+			clientData: clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: errors.New("assertion object is nil"),
 		},
-		"no extensions (iOS 26 and earlier)": {
-			authData: merge(
-				sha2(appID),
-				[]byte{0x00},
-				[]byte{0x00, 0x00, 0x00, 0x01},
-			),
-			wantVersion:  "",
-			wantCategory: attest.ValidationCategoryInvalid,
+		"error: public key is nil": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: errors.New("assertion state: PublicKey is nil or incomplete"),
+		},
+		"error: public key has nil curve": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				Challenge: "example_server_challenge",
+				PublicKey: &ecdsa.PublicKey{X: key.PublicKey.X, Y: key.PublicKey.Y},
+				Counter:   0,
+			},
+			wantErr: errors.New("assertion state: PublicKey is nil or incomplete"),
+		},
+		"error: public key has nil X": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &ecdsa.PublicKey{Curve: key.PublicKey.Curve, Y: key.PublicKey.Y},
+				Challenge: challenge,
+			},
+			wantErr: errors.New("PublicKey is nil or incomplete"),
+		},
+		"error: public key has nil Y": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &ecdsa.PublicKey{Curve: key.PublicKey.Curve, X: key.PublicKey.X},
+				Challenge: challenge,
+			},
+			wantErr: errors.New("PublicKey is nil or incomplete"),
+		},
+		"error: signature is nil": {
+			assertionObj: &attest.AssertionObject{Signature: nil, AuthData: assertionObj.AuthData},
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: attest.ErrInvalidSignature,
+		},
+		"error: signature is empty": {
+			assertionObj: &attest.AssertionObject{Signature: []byte{}, AuthData: assertionObj.AuthData},
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: attest.ErrInvalidSignature,
+		},
+		"error: signature is not valid ASN.1": {
+			assertionObj: &attest.AssertionObject{Signature: []byte("garbage"), AuthData: assertionObj.AuthData},
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: attest.ErrInvalidSignature,
+		},
+		"error: signature is corrupted": {
+			assertionObj: &attest.AssertionObject{Signature: flip(assertionObj.Signature), AuthData: assertionObj.AuthData},
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: attest.ErrInvalidSignature,
+		},
+		"error: signed with a different key": {
+			assertionObj: newAssertionObj(t, otherKey, assertionObj.AuthData, clientData),
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: attest.ErrInvalidSignature,
+		},
+		"error: clientData was tampered": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   []byte(`{"challenge":"tampered"}`), // Pass a clientData different from the one used when signing
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: attest.ErrInvalidSignature,
+		},
+		"error: authData was tampered": {
+			assertionObj: &attest.AssertionObject{Signature: assertionObj.Signature, AuthData: flip(assertionObj.AuthData)},
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: attest.ErrInvalidSignature,
+		},
+		"error: state public key differs from signing key": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &otherKey.PublicKey, // Only the verifying key is different
+				Challenge: challenge,
+			},
+			wantErr: attest.ErrInvalidSignature,
+		},
+		"error: authData is too short": {
+			assertionObj: newAssertionObj(t, key, []byte{}, clientData), // Empty authData, correctly signed
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: errors.New("authenticator data decoding failed"),
+		},
+		"error: authData has invalid extensions": {
+			assertionObj: newAssertionObj(t, key,
+				merge(sha2(appID), []byte{0x00}, []byte{0x00, 0x00, 0x00, 0x01}, []byte{0x01}), // Extensions is not a map
+				clientData),
+			challenge:  challenge,
+			clientData: clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.myapp",
+				PublicKey: &key.PublicKey,
+				Challenge: "example_server_challenge",
+				Counter:   0,
+			},
+			wantErr: errors.New("authenticator data decoding failed"),
+		},
+		"error: app ID mismatch": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "1234567890.com.example.otherapp", // Different from the app ID in authData
+				PublicKey: &key.PublicKey,
+				Challenge: challenge,
+			},
+			wantErr: attest.ErrUnmatchRPIDHash,
+		},
+		"error: app ID is empty": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     "",
+				PublicKey: &key.PublicKey,
+				Challenge: challenge,
+			},
+			wantErr: attest.ErrUnmatchRPIDHash,
+		},
+		"error: RP ID hash in authData is for a different app": {
+			assertionObj: newAssertionObj(t, key,
+				merge(sha2("1234567890.com.example.otherapp"), []byte{0x00}, []byte{0x00, 0x00, 0x00, 0x01}),
+				clientData), // Correctly signed authData whose RP ID hash is for another app
+			challenge:  challenge,
+			clientData: clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &key.PublicKey,
+				Challenge: challenge,
+			},
+			wantErr: attest.ErrUnmatchRPIDHash,
+		},
+		"error: counter equals previous": {
+			assertionObj: assertionObj, // authData counter = 1
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &key.PublicKey,
+				Challenge: challenge,
+				Counter:   1, // Same as the counter in authData
+			},
+			wantErr: errors.New("counter was not greater than previous"),
+		},
+		"error: counter is less than previous": {
+			assertionObj: assertionObj,
+			challenge:    challenge,
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &key.PublicKey,
+				Challenge: challenge,
+				Counter:   5, // Greater than the counter in authData
+			},
+			wantErr: errors.New("counter was not greater than previous"),
+		},
+		"error: counter is zero on first assertion": {
+			assertionObj: newAssertionObj(t, key,
+				merge(sha2(appID), []byte{0x00}, []byte{0x00, 0x00, 0x00, 0x00}), // counter = 0
+				clientData),
+			challenge:  challenge,
+			clientData: clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &key.PublicKey,
+				Challenge: challenge,
+				Counter:   0,
+			},
+			wantErr: errors.New("counter was not greater than previous"),
+		},
+		"error: challenge mismatch": {
+			assertionObj: assertionObj,
+			challenge:    "other_challenge", // Different from state.Challenge
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &key.PublicKey,
+				Challenge: challenge,
+			},
+			wantErr: errors.New("invalid challenge"),
+		},
+		"error: challenge is empty": {
+			assertionObj: assertionObj,
+			challenge:    "", // Empty challenge from the client
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &key.PublicKey,
+				Challenge: challenge,
+			},
+			wantErr: errors.New("invalid challenge"),
 		},
 	}
 
-	state := attest.AssertionState{AppID: appID, PublicKey: &key.PublicKey, Challenge: challenge}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Run("VerifyWithState", func(t *testing.T) {
+				service := attest.AssertionService{}
+
+				got, err := service.VerifyWithState(tt.assertionObj, tt.challenge, tt.clientData, tt.state)
+				if err != nil {
+					if tt.wantErr == nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+					if !strings.Contains(err.Error(), tt.wantErr.Error()) {
+						t.Errorf("err = %q, want it to contain %q", err, tt.wantErr)
+					}
+					return
+				}
+				if tt.wantErr != nil {
+					t.Fatalf("expected error containing %q, got result %+v", tt.wantErr, got)
+				}
+				if diff := cmp.Diff(tt.want, got); diff != "" {
+					t.Errorf("mismatch (-want +got):\n%s", diff)
+				}
+			})
+			t.Run("Verify(deprecated)", func(t *testing.T) {
+				service := attest.AssertionService{
+					AppID:     tt.state.AppID,
+					Challenge: tt.state.Challenge,
+					PublicKey: tt.state.PublicKey,
+					Counter:   tt.state.Counter,
+				}
+
+				got, err := service.Verify(tt.assertionObj, tt.challenge, tt.clientData)
+				if err != nil {
+					if tt.wantErr == nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+					if !strings.Contains(err.Error(), tt.wantErr.Error()) {
+						t.Errorf("err = %q, want it to contain %q", err, tt.wantErr)
+					}
+					return
+				}
+				if tt.wantErr != nil {
+					t.Fatalf("expected error containing %q, got result %+v", tt.wantErr, got)
+				}
+				if got != tt.want.Counter {
+					t.Errorf("counter = %d, want %d", got, tt.want.Counter)
+				}
+			})
+		})
+	}
+}
+
+func TestAssertionObject_UnmarshalCBOR(t *testing.T) {
+	authData := cborMap(
+		item{cborText("authenticatorData"), cborBytes(merge(
+			[]byte{ // RP ID hash (32 bytes)
+				0x45, 0x65, 0x12, 0xea, 0x7e, 0x26, 0x94, 0x76, 0xab, 0x93, 0xe1, 0xb7, 0x97, 0x16, 0x85, 0x59,
+				0x2f, 0xf7, 0x3f, 0x89, 0x4a, 0xc0, 0xec, 0x2f, 0xd5, 0x48, 0x08, 0xa0, 0x8b, 0xfb, 0x6c, 0x8f,
+			},
+			[]byte{0x40},                   // flags
+			[]byte{0x00, 0x00, 0x00, 0x01}, // counter
+			cborMap( // Extensions
+				item{cborText("apple_validation_category_01"), []byte{0x44, 0x01, 0x00, 0x00, 0x00}},
+				item{cborText("apple_bundle_version_01"), cborText("1.0")}, // apple_bundle_version_01
+			),
+		))},
+	)
+
+	tests := map[string]struct {
+		data    []byte
+		want    *attest.AssertionObject
+		wantErr error
+	}{
+		"valid: signature and authenticatorData": {
+			data: cborMap(
+				item{cborText("signature"), cborBytes([]byte("sig-bytes"))},
+				item{cborText("authenticatorData"), cborBytes(authData)},
+			),
+			want: &attest.AssertionObject{
+				Signature: []byte("sig-bytes"),
+				AuthData:  authData,
+			},
+		},
+		"empty data": {
+			data:    []byte{},
+			wantErr: io.ErrUnexpectedEOF,
+		},
+		"not a map": {
+			data:    cborUint(1),
+			wantErr: fmt.Errorf("expected CBOR type Map (major type 5) for AssertionObject, got major type %d", cbor.UnsignedInt),
+		},
+		"map key not text": {
+			data: cborMap(
+				item{cborUint(1), cborText("sig")},
+			),
+			wantErr: fmt.Errorf("expected string map key at index %d, got major type %d", 0, cbor.UnsignedInt),
+		},
+		"signature wrong value type": {
+			data: cborMap(
+				item{cborText("signature"), cborUint(1)},
+			),
+			wantErr: fmt.Errorf(`expected bytestring for signature (key "signature"), got major type %d`, cbor.UnsignedInt),
+		},
+		"authenticatorData wrong value type": {
+			data: cborMap(
+				item{cborText("authenticatorData"), cborText("not-bytes")},
+			),
+			wantErr: fmt.Errorf(`expected bytestring for authData (key "authenticatorData"), got major type %d`, cbor.TextString),
+		},
+		"unknown key": {
+			data: cborMap(
+				item{cborText("unknown_key"), cborUint(1)},
+			),
+			wantErr: attest.ErrUnknownKey,
+		},
+		"only signature present (authenticatorData omitted)": {
+			data: cborMap(
+				item{cborText("signature"), cborBytes([]byte("sig-bytes"))},
+			),
+			wantErr: errors.New("missing required keys"),
+		},
+		"only authenticatorData present (signature omitted)": {
+			data: cborMap(
+				item{cborText("authenticatorData"), cborBytes(authData)},
+			),
+			wantErr: errors.New("missing required keys"),
+		},
+		"map size is truncated": {
+			data:    []byte{0xb8}, // map with a 1-byte length that is missing
+			wantErr: errors.New("failed to read CBOR map size"),
+		},
+		"map has no entries despite declared size": {
+			data:    []byte{0xa1}, // map(1) with no entries
+			wantErr: errors.New("failed to read map key header at index 0"),
+		},
+		"map key string is truncated": {
+			data:    []byte{0xa1, 0x69, 's'}, // text(9) but only 1 byte
+			wantErr: errors.New("failed to read map key string at index 0"),
+		},
+		"signature value is missing": {
+			data:    merge([]byte{0xa1}, cborText("signature")),
+			wantErr: errors.New(`failed to read map value header (key "signature")`),
+		},
+		"signature bytes are truncated": {
+			data:    merge([]byte{0xa1}, cborText("signature"), []byte{0x45, 'a'}), // bytes(5) but only 1 byte
+			wantErr: errors.New("failed to read signature bytes"),
+		},
+		"authenticatorData value is missing": {
+			data:    merge([]byte{0xa1}, cborText("authenticatorData")),
+			wantErr: errors.New(`failed to read map value header (key "authenticatorData")`),
+		},
+		"authenticatorData bytes are truncated": {
+			data:    merge([]byte{0xa1}, cborText("authenticatorData"), []byte{0x45, 'a'}),
+			wantErr: errors.New("failed to read authData bytes"),
+		},
+		"duplicate key: last value wins": {
+			data: cborMap(
+				item{cborText("signature"), cborBytes([]byte("first"))},
+				item{cborText("signature"), cborBytes([]byte("second"))},
+				item{cborText("authenticatorData"), cborBytes(authData)},
+			),
+			want: &attest.AssertionObject{
+				Signature: []byte("second"), // The later value overwrites the earlier one
+				AuthData:  authData,
+			},
+		},
+	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			// The client signs SHA256(nonce), where
-			// nonce = SHA256(authData || SHA256(clientData)).
-			clientDataHash := sha256.Sum256(clientData)
-			h := sha256.New()
-			h.Write(tt.authData)
-			h.Write(clientDataHash[:])
-			nonceHash := sha256.Sum256(h.Sum(nil))
-			sig, err := ecdsa.SignASN1(rand.Reader, key, nonceHash[:])
+			var ao attest.AssertionObject
+			err := ao.UnmarshalCBOR(tt.data)
 			if err != nil {
-				t.Fatal(err)
+				if tt.wantErr == nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr.Error()) {
+					t.Errorf("UnmarshalCBOR() error = %q, want error containing %q", err.Error(), tt.wantErr.Error())
+				}
+				return
 			}
-			obj := &attest.AssertionObject{Signature: sig, AuthData: tt.authData}
+			if tt.wantErr != nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr.Error())
+			}
 
-			got, err := (&attest.AssertionService{}).VerifyWithState(obj, challenge, clientData, state)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Counter != 1 {
-				t.Errorf("Counter = %d, want 1", got.Counter)
-			}
-			if got.AppleBundleVersion != tt.wantVersion {
-				t.Errorf("AppleBundleVersion = %q, want %q", got.AppleBundleVersion, tt.wantVersion)
-			}
-			if got.AppleValidationCategory != tt.wantCategory {
-				t.Errorf("AppleValidationCategory = %v, want %v", got.AppleValidationCategory, tt.wantCategory)
+			if diff := cmp.Diff(tt.want, &ao); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
 }
 
-const AssertionObjectB64 = "omlzaWduYXR1cmVYRjBEAiBJ6BT/QR689UKy84YyN3RDydYD9KVQ2BTRK+x1i8ezqAIgGM7BsZbSuF6TjmK6xtOFekyVyjf8akGvp5qFRGm9LTxxYXV0aGVudGljYXRvckRhdGFYJUVlEup+JpR2q5Pht5cWhVkv9z+JSsDsL9VICKCL+2yPQAAAAAE="
-
-func TestAssertionObject_UnmarshalCBOR(t *testing.T) {
-	data := testutils.DecodeB64(AssertionObjectB64)
-
-	var ao attest.AssertionObject
-	if err := ao.UnmarshalCBOR(data); err != nil {
-		t.Fatalf("UnmarshalCBOR failed: %v", err)
-	}
-
-	wantAuthData := testutils.DecodeB64("RWUS6n4mlHark+G3lxaFWS/3P4lKwOwv1UgIoIv7bI9AAAAAAQ==")
-	if !reflect.DeepEqual(wantAuthData, ao.AuthData) {
-		t.Error("AssertionObject.AuthData unmatched")
-	}
-	wantSignature := testutils.DecodeB64("MEQCIEnoFP9BHrz1QrLzhjI3dEPJ1gP0pVDYFNEr7HWLx7OoAiAYzsGxltK4XpOOYrrG04V6TJXKN/xqQa+nmoVEab0tPA==")
-	if !reflect.DeepEqual(wantSignature, ao.Signature) {
-		t.Error("AssertionObject.Signature unmatched")
-	}
-}
-
 func BenchmarkAssertionObject_UnmarshalCBOR(b *testing.B) {
-	data := testutils.DecodeB64(AssertionObjectB64)
-
-	b.ReportAllocs()
+	data := cborMap(
+		item{cborText("authenticatorData"), cborBytes(merge(
+			[]byte{ // RP ID hash (32 bytes)
+				0x45, 0x65, 0x12, 0xea, 0x7e, 0x26, 0x94, 0x76, 0xab, 0x93, 0xe1, 0xb7, 0x97, 0x16, 0x85, 0x59,
+				0x2f, 0xf7, 0x3f, 0x89, 0x4a, 0xc0, 0xec, 0x2f, 0xd5, 0x48, 0x08, 0xa0, 0x8b, 0xfb, 0x6c, 0x8f,
+			},
+			[]byte{0x40},                   // flags: AT bit set (real Apple devices set this even without credential data)
+			[]byte{0x00, 0x00, 0x00, 0x01}, // counter = 1
+			cborMap( // Extensions
+				item{cborText("apple_validation_category_01"), []byte{0x44, 0x01, 0x00, 0x00, 0x00}},
+				item{cborText("apple_bundle_version_01"), cborText("1.0")}, // apple_bundle_version_01
+			),
+		))},
+		item{cborText("signature"), cborBytes([]byte{
+			0x30, 0x44, 0x02, 0x20, 0x49, 0xe8, 0x14, 0xff, 0x41, 0x1e, 0xbc, 0xf5, 0x42, 0xb2, 0xf3, 0x86, 0x32, 0x37, 0x74, 0x43, 0xc9, 0xd6, 0x03, 0xf4,
+			0xa5, 0x50, 0xd8, 0x14, 0xd1, 0x2b, 0xec, 0x75, 0x8b, 0xc7, 0xb3, 0xa8, 0x02, 0x20, 0x18, 0xce, 0xc1, 0xb1, 0x96, 0xd2, 0xb8, 0x5e, 0x93, 0x8e,
+			0x62, 0xba, 0xc6, 0xd3, 0x85, 0x7a, 0x4c, 0x95, 0xca, 0x37, 0xfc, 0x6a, 0x41, 0xaf, 0xa7, 0x9a, 0x85, 0x44, 0x69, 0xbd, 0x2d, 0x3c,
+		})},
+	)
 	b.ResetTimer()
 
-	for b.Loop() {
+	for i := 0; b.Loop(); i++ {
 		var ao attest.AssertionObject
 		if err := ao.UnmarshalCBOR(data); err != nil {
 			b.Fatal(err)

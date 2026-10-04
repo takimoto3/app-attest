@@ -113,8 +113,15 @@ func TestAttestationService_Verify(t *testing.T) {
 			}
 
 			result, err := target.Verify(&attestObject, tt.clientDataHash, tt.keyID)
-			if !IsEquals(tt.wantErr, err) {
-				t.Fatal(err)
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("expected error %q, got nil", tt.wantErr)
+				}
+				if !errors.Is(err, tt.wantErr) && !strings.Contains(err.Error(), tt.wantErr.Error()) {
+					t.Fatalf("got error %q, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 
 			if result != nil {
