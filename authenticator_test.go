@@ -193,6 +193,61 @@ func TestCoseKey_Unmarshal(t *testing.T) {
 			},
 			wantErr: wrap("failed to read X coordinate bytes", io.ErrUnexpectedEOF),
 		},
+		"missing key: x": {
+			data: cborMap(
+				item{cborUint(1), cborUint(2)},
+				item{cborUint(3), cborNegInt(-7)},
+				item{cborNegInt(-1), cborUint(1)},
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
+			),
+			wantErr: wrap("x(-2)", attest.ErrMissingKey),
+		},
+		"empty map": {
+			data:    []byte{0xa0},
+			wantErr: wrap("kty(1), alg(3), crv(-1), x(-2), y(-3)", attest.ErrMissingKey),
+		},
+		"duplicate key: kty": {
+			data: cborMap(
+				item{cborUint(1), cborUint(2)},
+				item{cborUint(1), cborUint(2)},
+			),
+			wantErr: wrap(": 1", attest.ErrDuplicateKey),
+		},
+		"duplicate key: alg": {
+			data: cborMap(
+				item{cborUint(3), cborNegInt(-7)},
+				item{cborUint(3), cborNegInt(-7)},
+			),
+			wantErr: wrap(": 3", attest.ErrDuplicateKey),
+		},
+		"duplicate key: crv": {
+			data: cborMap(
+				item{cborNegInt(-1), cborUint(1)},
+				item{cborNegInt(-1), cborUint(1)},
+			),
+			wantErr: wrap(": -1", attest.ErrDuplicateKey),
+		},
+		"duplicate key: x": {
+			data: cborMap(
+				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())},
+				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())},
+			),
+			wantErr: wrap(": -2", attest.ErrDuplicateKey),
+		},
+		"duplicate key: y": {
+			data: cborMap(
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
+			),
+			wantErr: wrap(": -3", attest.ErrDuplicateKey),
+		},
+		"duplicate key: different value": {
+			data: cborMap(
+				item{cborUint(1), cborUint(2)},
+				item{cborUint(1), cborUint(9)},
+			),
+			wantErr: wrap(": 1", attest.ErrDuplicateKey),
+		},
 	}
 
 	for name, tt := range tests {
@@ -652,6 +707,30 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 			),
 			requireCred: true,
 			wantErr:     wrap("failed to read"),
+		},
+		"duplicate extension: bundle version": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_bundle_version_01"), cborText("1.0")},
+					item{cborText("apple_bundle_version_01"), cborText("2.0")},
+				),
+			),
+			wantErr: wrap("apple_bundle_version_01", attest.ErrDuplicateKey),
+		},
+		"duplicate extension: validation category": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})},
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})},
+				),
+			),
+			wantErr: wrap("apple_validation_category_01", attest.ErrDuplicateKey),
 		},
 	}
 
