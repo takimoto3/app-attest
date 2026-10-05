@@ -6,10 +6,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -42,7 +40,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 末尾1バイトを反転したコピーを返す
+	// Returns a copy with the last byte inverted
 	flip := func(b []byte) []byte {
 		c := bytes.Clone(b)
 		c[len(c)-1] ^= 0xff
@@ -71,7 +69,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 		clientData   []byte
 		state        attest.AssertionState
 		want         *attest.AssertionResult
-		wantErr      error
+		wantErr      *wantError
 	}{
 		"success": {
 			assertionObj: assertionObj,
@@ -119,7 +117,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: errors.New("assertion object is nil"),
+			wantErr: expectError("assertion object is nil"),
 		},
 		"error: public key is nil": {
 			assertionObj: assertionObj,
@@ -130,7 +128,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: errors.New("assertion state: PublicKey is nil or incomplete"),
+			wantErr: expectError("assertion state: PublicKey is nil or incomplete"),
 		},
 		"error: public key has nil curve": {
 			assertionObj: assertionObj,
@@ -142,7 +140,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey: &ecdsa.PublicKey{X: key.PublicKey.X, Y: key.PublicKey.Y},
 				Counter:   0,
 			},
-			wantErr: errors.New("assertion state: PublicKey is nil or incomplete"),
+			wantErr: expectError("assertion state: PublicKey is nil or incomplete"),
 		},
 		"error: public key has nil X": {
 			assertionObj: assertionObj,
@@ -153,7 +151,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey: &ecdsa.PublicKey{Curve: key.PublicKey.Curve, Y: key.PublicKey.Y},
 				Challenge: challenge,
 			},
-			wantErr: errors.New("PublicKey is nil or incomplete"),
+			wantErr: expectError("PublicKey is nil or incomplete"),
 		},
 		"error: public key has nil Y": {
 			assertionObj: assertionObj,
@@ -164,7 +162,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey: &ecdsa.PublicKey{Curve: key.PublicKey.Curve, X: key.PublicKey.X},
 				Challenge: challenge,
 			},
-			wantErr: errors.New("PublicKey is nil or incomplete"),
+			wantErr: expectError("PublicKey is nil or incomplete"),
 		},
 		"error: signature is nil": {
 			assertionObj: &attest.AssertionObject{Signature: nil, AuthData: assertionObj.AuthData},
@@ -176,7 +174,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: attest.ErrInvalidSignature,
+			wantErr: expectError(attest.ErrInvalidSignature),
 		},
 		"error: signature is empty": {
 			assertionObj: &attest.AssertionObject{Signature: []byte{}, AuthData: assertionObj.AuthData},
@@ -188,7 +186,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: attest.ErrInvalidSignature,
+			wantErr: expectError(attest.ErrInvalidSignature),
 		},
 		"error: signature is not valid ASN.1": {
 			assertionObj: &attest.AssertionObject{Signature: []byte("garbage"), AuthData: assertionObj.AuthData},
@@ -200,7 +198,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: attest.ErrInvalidSignature,
+			wantErr: expectError(attest.ErrInvalidSignature),
 		},
 		"error: signature is corrupted": {
 			assertionObj: &attest.AssertionObject{Signature: flip(assertionObj.Signature), AuthData: assertionObj.AuthData},
@@ -212,7 +210,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: attest.ErrInvalidSignature,
+			wantErr: expectError(attest.ErrInvalidSignature),
 		},
 		"error: signed with a different key": {
 			assertionObj: newAssertionObj(t, otherKey, assertionObj.AuthData, clientData),
@@ -224,7 +222,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: attest.ErrInvalidSignature,
+			wantErr: expectError(attest.ErrInvalidSignature),
 		},
 		"error: clientData was tampered": {
 			assertionObj: assertionObj,
@@ -236,7 +234,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: attest.ErrInvalidSignature,
+			wantErr: expectError(attest.ErrInvalidSignature),
 		},
 		"error: authData was tampered": {
 			assertionObj: &attest.AssertionObject{Signature: assertionObj.Signature, AuthData: flip(assertionObj.AuthData)},
@@ -248,7 +246,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: attest.ErrInvalidSignature,
+			wantErr: expectError(attest.ErrInvalidSignature),
 		},
 		"error: state public key differs from signing key": {
 			assertionObj: assertionObj,
@@ -259,7 +257,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey: &otherKey.PublicKey, // Only the verifying key is different
 				Challenge: challenge,
 			},
-			wantErr: attest.ErrInvalidSignature,
+			wantErr: expectError(attest.ErrInvalidSignature),
 		},
 		"error: authData is too short": {
 			assertionObj: newAssertionObj(t, key, []byte{}, clientData), // Empty authData, correctly signed
@@ -271,7 +269,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: errors.New("authenticator data decoding failed"),
+			wantErr: expectError("authenticator data length too short"),
 		},
 		"error: authData has invalid extensions": {
 			assertionObj: newAssertionObj(t, key,
@@ -285,7 +283,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: "example_server_challenge",
 				Counter:   0,
 			},
-			wantErr: errors.New("authenticator data decoding failed"),
+			wantErr: expectError("failed to parse extensions"),
 		},
 		"error: app ID mismatch": {
 			assertionObj: assertionObj,
@@ -296,7 +294,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey: &key.PublicKey,
 				Challenge: challenge,
 			},
-			wantErr: attest.ErrUnmatchRPIDHash,
+			wantErr: expectError(attest.ErrUnmatchRPIDHash),
 		},
 		"error: app ID is empty": {
 			assertionObj: assertionObj,
@@ -307,7 +305,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey: &key.PublicKey,
 				Challenge: challenge,
 			},
-			wantErr: attest.ErrUnmatchRPIDHash,
+			wantErr: expectError(attest.ErrUnmatchRPIDHash),
 		},
 		"error: RP ID hash in authData is for a different app": {
 			assertionObj: newAssertionObj(t, key,
@@ -320,7 +318,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey: &key.PublicKey,
 				Challenge: challenge,
 			},
-			wantErr: attest.ErrUnmatchRPIDHash,
+			wantErr: expectError(attest.ErrUnmatchRPIDHash),
 		},
 		"error: counter equals previous": {
 			assertionObj: assertionObj, // authData counter = 1
@@ -332,7 +330,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: challenge,
 				Counter:   1, // Same as the counter in authData
 			},
-			wantErr: errors.New("counter was not greater than previous"),
+			wantErr: expectError("counter was not greater than previous"),
 		},
 		"error: counter is less than previous": {
 			assertionObj: assertionObj,
@@ -344,7 +342,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: challenge,
 				Counter:   5, // Greater than the counter in authData
 			},
-			wantErr: errors.New("counter was not greater than previous"),
+			wantErr: expectError("counter was not greater than previous"),
 		},
 		"error: counter is zero on first assertion": {
 			assertionObj: newAssertionObj(t, key,
@@ -358,7 +356,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				Challenge: challenge,
 				Counter:   0,
 			},
-			wantErr: errors.New("counter was not greater than previous"),
+			wantErr: expectError("counter was not greater than previous"),
 		},
 		"error: challenge mismatch": {
 			assertionObj: assertionObj,
@@ -369,7 +367,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey: &key.PublicKey,
 				Challenge: challenge,
 			},
-			wantErr: errors.New("invalid challenge"),
+			wantErr: expectError("invalid challenge"),
 		},
 		"error: challenge is empty": {
 			assertionObj: assertionObj,
@@ -380,7 +378,18 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey: &key.PublicKey,
 				Challenge: challenge,
 			},
-			wantErr: errors.New("invalid challenge"),
+			wantErr: expectError("challenge is empty"),
+		},
+		"error: challenge is empty on both sides": {
+			assertionObj: assertionObj,
+			challenge:    "", // Client sent an empty challenge
+			clientData:   clientData,
+			state: attest.AssertionState{
+				AppID:     appID,
+				PublicKey: &key.PublicKey,
+				Challenge: "", // Caller forgot to set it
+			},
+			wantErr: expectError("challenge is empty"),
 		},
 	}
 
@@ -390,17 +399,8 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				service := attest.AssertionService{}
 
 				got, err := service.VerifyWithState(tt.assertionObj, tt.challenge, tt.clientData, tt.state)
-				if err != nil {
-					if tt.wantErr == nil {
-						t.Fatalf("unexpected error: %v", err)
-					}
-					if !strings.Contains(err.Error(), tt.wantErr.Error()) {
-						t.Errorf("err = %q, want it to contain %q", err, tt.wantErr)
-					}
+				if !assertErr(t, err, tt.wantErr) {
 					return
-				}
-				if tt.wantErr != nil {
-					t.Fatalf("expected error containing %q, got result %+v", tt.wantErr, got)
 				}
 				if diff := cmp.Diff(tt.want, got); diff != "" {
 					t.Errorf("mismatch (-want +got):\n%s", diff)
@@ -415,17 +415,8 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				}
 
 				got, err := service.Verify(tt.assertionObj, tt.challenge, tt.clientData)
-				if err != nil {
-					if tt.wantErr == nil {
-						t.Fatalf("unexpected error: %v", err)
-					}
-					if !strings.Contains(err.Error(), tt.wantErr.Error()) {
-						t.Errorf("err = %q, want it to contain %q", err, tt.wantErr)
-					}
+				if !assertErr(t, err, tt.wantErr) {
 					return
-				}
-				if tt.wantErr != nil {
-					t.Fatalf("expected error containing %q, got result %+v", tt.wantErr, got)
 				}
 				if got != tt.want.Counter {
 					t.Errorf("counter = %d, want %d", got, tt.want.Counter)
@@ -436,25 +427,23 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 }
 
 func TestAssertionObject_UnmarshalCBOR(t *testing.T) {
-	authData := cborMap(
-		item{cborText("authenticatorData"), cborBytes(merge(
-			[]byte{ // RP ID hash (32 bytes)
-				0x45, 0x65, 0x12, 0xea, 0x7e, 0x26, 0x94, 0x76, 0xab, 0x93, 0xe1, 0xb7, 0x97, 0x16, 0x85, 0x59,
-				0x2f, 0xf7, 0x3f, 0x89, 0x4a, 0xc0, 0xec, 0x2f, 0xd5, 0x48, 0x08, 0xa0, 0x8b, 0xfb, 0x6c, 0x8f,
-			},
-			[]byte{0x40},                   // flags
-			[]byte{0x00, 0x00, 0x00, 0x01}, // counter
-			cborMap( // Extensions
-				item{cborText("apple_validation_category_01"), []byte{0x44, 0x01, 0x00, 0x00, 0x00}},
-				item{cborText("apple_bundle_version_01"), cborText("1.0")}, // apple_bundle_version_01
-			),
-		))},
+	authData := merge(
+		[]byte{ // RP ID hash (32 bytes)
+			0x45, 0x65, 0x12, 0xea, 0x7e, 0x26, 0x94, 0x76, 0xab, 0x93, 0xe1, 0xb7, 0x97, 0x16, 0x85, 0x59,
+			0x2f, 0xf7, 0x3f, 0x89, 0x4a, 0xc0, 0xec, 0x2f, 0xd5, 0x48, 0x08, 0xa0, 0x8b, 0xfb, 0x6c, 0x8f,
+		},
+		[]byte{0x40},                   // flags
+		[]byte{0x00, 0x00, 0x00, 0x01}, // counter
+		cborMap( // Extensions
+			item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})},
+			item{cborText("apple_bundle_version_01"), cborText("1.0")}, // apple_bundle_version_01
+		),
 	)
 
 	tests := map[string]struct {
 		data    []byte
 		want    *attest.AssertionObject
-		wantErr error
+		wantErr *wantError
 	}{
 		"valid: signature and authenticatorData": {
 			data: cborMap(
@@ -468,86 +457,95 @@ func TestAssertionObject_UnmarshalCBOR(t *testing.T) {
 		},
 		"empty data": {
 			data:    []byte{},
-			wantErr: io.ErrUnexpectedEOF,
+			wantErr: expectError("failed to read CBOR map header", io.ErrUnexpectedEOF),
 		},
 		"not a map": {
 			data:    cborUint(1),
-			wantErr: fmt.Errorf("expected CBOR type Map (major type 5) for AssertionObject, got major type %d", cbor.UnsignedInt),
+			wantErr: expectError(fmt.Sprintf("expected CBOR type Map (major type 5) for AssertionObject, got major type %d", cbor.UnsignedInt)),
 		},
 		"map key not text": {
 			data: cborMap(
 				item{cborUint(1), cborText("sig")},
 			),
-			wantErr: fmt.Errorf("expected string map key at index %d, got major type %d", 0, cbor.UnsignedInt),
+			wantErr: expectError(fmt.Sprintf("expected string map key at index %d, got major type %d", 0, cbor.UnsignedInt)),
 		},
 		"signature wrong value type": {
 			data: cborMap(
 				item{cborText("signature"), cborUint(1)},
 			),
-			wantErr: fmt.Errorf(`expected bytestring for signature (key "signature"), got major type %d`, cbor.UnsignedInt),
+			wantErr: expectError(fmt.Sprintf(`expected bytestring for signature (key "signature"), got major type %d`, cbor.UnsignedInt)),
 		},
 		"authenticatorData wrong value type": {
 			data: cborMap(
 				item{cborText("authenticatorData"), cborText("not-bytes")},
 			),
-			wantErr: fmt.Errorf(`expected bytestring for authData (key "authenticatorData"), got major type %d`, cbor.TextString),
+			wantErr: expectError(fmt.Sprintf(`expected bytestring for authData (key "authenticatorData"), got major type %d`, cbor.TextString)),
 		},
 		"unknown key": {
 			data: cborMap(
 				item{cborText("unknown_key"), cborUint(1)},
 			),
-			wantErr: attest.ErrUnknownKey,
+			wantErr: expectError("unknown_key", attest.ErrUnknownKey),
 		},
 		"only signature present (authenticatorData omitted)": {
 			data: cborMap(
 				item{cborText("signature"), cborBytes([]byte("sig-bytes"))},
 			),
-			wantErr: errors.New("missing required keys"),
+			wantErr: expectError("authenticatorData", attest.ErrMissingKey),
 		},
 		"only authenticatorData present (signature omitted)": {
 			data: cborMap(
 				item{cborText("authenticatorData"), cborBytes(authData)},
 			),
-			wantErr: errors.New("missing required keys"),
+			wantErr: expectError("signature", attest.ErrMissingKey),
+		},
+		"empty map": {
+			data:    []byte{0xa0},
+			wantErr: expectError("signature, authenticatorData", attest.ErrMissingKey),
 		},
 		"map size is truncated": {
 			data:    []byte{0xb8}, // map with a 1-byte length that is missing
-			wantErr: errors.New("failed to read CBOR map size"),
+			wantErr: expectError("failed to read CBOR map size", io.ErrUnexpectedEOF),
 		},
 		"map has no entries despite declared size": {
 			data:    []byte{0xa1}, // map(1) with no entries
-			wantErr: errors.New("failed to read map key header at index 0"),
+			wantErr: expectError("failed to read map key header at index 0", io.ErrUnexpectedEOF),
 		},
 		"map key string is truncated": {
 			data:    []byte{0xa1, 0x69, 's'}, // text(9) but only 1 byte
-			wantErr: errors.New("failed to read map key string at index 0"),
+			wantErr: expectError("failed to read map key string at index 0", io.ErrUnexpectedEOF),
 		},
 		"signature value is missing": {
 			data:    merge([]byte{0xa1}, cborText("signature")),
-			wantErr: errors.New(`failed to read map value header (key "signature")`),
+			wantErr: expectError(`failed to read map value header (key "signature")`, io.ErrUnexpectedEOF),
 		},
 		"signature bytes are truncated": {
 			data:    merge([]byte{0xa1}, cborText("signature"), []byte{0x45, 'a'}), // bytes(5) but only 1 byte
-			wantErr: errors.New("failed to read signature bytes"),
+			wantErr: expectError("failed to read signature bytes", io.ErrUnexpectedEOF),
 		},
 		"authenticatorData value is missing": {
 			data:    merge([]byte{0xa1}, cborText("authenticatorData")),
-			wantErr: errors.New(`failed to read map value header (key "authenticatorData")`),
+			wantErr: expectError(`failed to read map value header (key "authenticatorData")`, io.ErrUnexpectedEOF),
 		},
 		"authenticatorData bytes are truncated": {
 			data:    merge([]byte{0xa1}, cborText("authenticatorData"), []byte{0x45, 'a'}),
-			wantErr: errors.New("failed to read authData bytes"),
+			wantErr: expectError("failed to read authData bytes", io.ErrUnexpectedEOF),
 		},
-		"duplicate key: last value wins": {
+		"duplicate key: signature": {
 			data: cborMap(
 				item{cborText("signature"), cborBytes([]byte("first"))},
 				item{cborText("signature"), cborBytes([]byte("second"))},
 				item{cborText("authenticatorData"), cborBytes(authData)},
 			),
-			want: &attest.AssertionObject{
-				Signature: []byte("second"), // The later value overwrites the earlier one
-				AuthData:  authData,
-			},
+			wantErr: expectError("signature", attest.ErrDuplicateKey),
+		},
+		"duplicate key: authenticatorData": {
+			data: cborMap(
+				item{cborText("authenticatorData"), cborBytes(authData)},
+				item{cborText("authenticatorData"), cborBytes(authData)},
+				item{cborText("signature"), cborBytes([]byte("sig-bytes"))},
+			),
+			wantErr: expectError("authenticatorData", attest.ErrDuplicateKey),
 		},
 	}
 
@@ -555,17 +553,8 @@ func TestAssertionObject_UnmarshalCBOR(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var ao attest.AssertionObject
 			err := ao.UnmarshalCBOR(tt.data)
-			if err != nil {
-				if tt.wantErr == nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr.Error()) {
-					t.Errorf("UnmarshalCBOR() error = %q, want error containing %q", err.Error(), tt.wantErr.Error())
-				}
+			if !assertErr(t, err, tt.wantErr) {
 				return
-			}
-			if tt.wantErr != nil {
-				t.Fatalf("expected error containing %q, got nil", tt.wantErr.Error())
 			}
 
 			if diff := cmp.Diff(tt.want, &ao); diff != "" {
@@ -585,7 +574,7 @@ func BenchmarkAssertionObject_UnmarshalCBOR(b *testing.B) {
 			[]byte{0x40},                   // flags: AT bit set (real Apple devices set this even without credential data)
 			[]byte{0x00, 0x00, 0x00, 0x01}, // counter = 1
 			cborMap( // Extensions
-				item{cborText("apple_validation_category_01"), []byte{0x44, 0x01, 0x00, 0x00, 0x00}},
+				item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})},
 				item{cborText("apple_bundle_version_01"), cborText("1.0")}, // apple_bundle_version_01
 			),
 		))},

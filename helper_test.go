@@ -14,8 +14,8 @@ type wantError struct {
 	sentinels []error // each must satisfy errors.Is(got, sentinel)
 }
 
-// expect builds an expectation from at most one string (message fragment)
-// and any number of errors (sentinels checked with errors.Is).
+// expectError builds an expectation from at most one string (message
+// fragment) and any number of errors (sentinels checked with errors.Is).
 // It panics on misuse, since that is a bug in the test table.
 func expectError(args ...any) *wantError {
 	w := &wantError{}
@@ -23,18 +23,18 @@ func expectError(args ...any) *wantError {
 		switch v := a.(type) {
 		case string:
 			if w.msg != "" {
-				panic("expect: more than one message fragment")
+				panic("expectError: more than one message fragment")
 			}
 			w.msg = v
 		case error:
 			w.sentinels = append(w.sentinels, v)
 		default:
 			// also catches a nil sentinel (untyped nil -> %T is <nil>)
-			panic(fmt.Sprintf("expect: arg %d: unsupported type %T", i, a))
+			panic(fmt.Sprintf("expectError: arg %d: unsupported type %T", i, a))
 		}
 	}
 	if w.msg == "" && len(w.sentinels) == 0 {
-		panic("expect: no message and no sentinels would accept any error")
+		panic("expectError: no message and no sentinels would accept any error")
 	}
 	return w
 }
@@ -58,7 +58,7 @@ func assertErr(t *testing.T, got error, want *wantError) (proceed bool) {
 	}
 	for _, s := range want.sentinels {
 		if !errors.Is(got, s) {
-			t.Errorf("error %q is not errors.Is(%v)", got, s)
+			t.Errorf("error %q does not wrap %v", got, s)
 		}
 	}
 	return false

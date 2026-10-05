@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/takimoto3/app-attest/cbor"
 )
@@ -15,14 +16,26 @@ var (
 	ErrUnmatchRPIDHash  = errors.New("RP Hash mismatch")
 )
 
-// cborAssertionKey is a bit flag for a required CBOR map key of AssertionObject.
-type cborAssertionKey byte
+// cborAssertKey is a bit flag for a required CBOR map key of AssertionObject.
+type cborAssertKey byte
 
 const (
-	keySignature cborAssertionKey = 1 << iota
-	keyAuthData
-	requiredKeys = keySignature | keyAuthData
+	cborAssertSignature cborAssertKey = 1 << iota
+	cborAssertAuthData
+
+	cborAssertAll = cborAssertSignature | cborAssertAuthData
 )
+
+func (k cborAssertKey) Names() string {
+	var names []string
+	if k&cborAssertSignature != 0 {
+		names = append(names, "signature")
+	}
+	if k&cborAssertAuthData != 0 {
+		names = append(names, "authenticatorData")
+	}
+	return strings.Join(names, ", ")
+}
 
 type AssertionObject struct {
 	// ASN.1 Encoded as a Sequence of two integers
@@ -107,6 +120,9 @@ func (service *AssertionService) verify(assertObject *AssertionObject, challenge
 	if assertObject == nil {
 		return nil, errors.New("assertion object is nil")
 	}
+	if challenge == "" {
+		return nil, errors.New("challenge is empty")
+	}
 	if !isKeyComplete(state.PublicKey) {
 		return nil, errors.New("assertion state: PublicKey is nil or incomplete")
 	}
@@ -157,7 +173,7 @@ func (service *AssertionService) verify(assertObject *AssertionObject, challenge
 //
 // Returns an error if the data is malformed or contains unexpected types.
 func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
-	var gotKeys cborAssertionKey
+	var gotKeys cborAssertKey
 
 	dec := cbor.NewDecoder(data)
 	mt, ai, err := dec.ReadHeader()
@@ -185,6 +201,10 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 		}
 		switch key {
 		case "signature":
+			if gotKeys&cborAssertSignature != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cborAssertSignature
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "signature") at index %d: %w`, i, err)
@@ -197,8 +217,11 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 				return fmt.Errorf(`failed to read signature bytes (key "signature"): %w`, err)
 			}
 			ao.Signature = val
-			gotKeys |= keySignature
 		case "authenticatorData":
+			if gotKeys&cborAssertAuthData != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cborAssertAuthData
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "authenticatorData") at index %d: %w`, i, err)
@@ -211,13 +234,12 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 				return fmt.Errorf(`failed to read authData bytes (key "authenticatorData"): %w`, err)
 			}
 			ao.AuthData = val
-			gotKeys |= keyAuthData
 		default:
 			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
 		}
 	}
-	if missing := requiredKeys &^ gotKeys; missing != 0 {
-		return fmt.Errorf("missing required keys: %#b", missing)
+	if missing := cborAssertAll &^ gotKeys; missing != 0 {
+		return fmt.Errorf("%w: %s", ErrMissingKey, missing.Names())
 	}
 
 	return nil
