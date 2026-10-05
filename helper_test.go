@@ -2,6 +2,7 @@ package attest_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -13,22 +14,36 @@ type wantError struct {
 	sentinels []error // each must satisfy errors.Is(got, sentinel)
 }
 
-func (w *wantError) Error() string { return w.msg }
-
-// wrap checks the message fragment and, optionally, the %w chain.
-func wrap(msg string, sentinels ...error) *wantError {
-	return &wantError{msg: msg, sentinels: sentinels}
-}
-
-// is checks only errors.Is, ignoring the message.
-func is(sentinels ...error) *wantError {
-	return &wantError{sentinels: sentinels}
+// expect builds an expectation from at most one string (message fragment)
+// and any number of errors (sentinels checked with errors.Is).
+// It panics on misuse, since that is a bug in the test table.
+func expectError(args ...any) *wantError {
+	w := &wantError{}
+	for i, a := range args {
+		switch v := a.(type) {
+		case string:
+			if w.msg != "" {
+				panic("expect: more than one message fragment")
+			}
+			w.msg = v
+		case error:
+			w.sentinels = append(w.sentinels, v)
+		default:
+			// also catches a nil sentinel (untyped nil -> %T is <nil>)
+			panic(fmt.Sprintf("expect: arg %d: unsupported type %T", i, a))
+		}
+	}
+	if w.msg == "" && len(w.sentinels) == 0 {
+		panic("expect: no message and no sentinels would accept any error")
+	}
+	return w
 }
 
 // assertErr verifies got against want and reports whether the test
 // should continue (true only when no error was expected and none occurred).
 func assertErr(t *testing.T, got error, want *wantError) (proceed bool) {
 	t.Helper()
+
 	if want == nil {
 		if got != nil {
 			t.Fatalf("unexpected error: %v", got)
