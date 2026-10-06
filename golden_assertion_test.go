@@ -31,12 +31,12 @@ func TestGolden_AssertionService_Verify(t *testing.T) {
 		AssertionBase64  string `json:"assertionBase64"`
 		ChallengeBase64  string `json:"challengeBase64"`
 		ClientDataBase64 string `json:"clientDataBase64"`
-		PublicKey        string `json:"publicKeyPEM"`
+		PublicKeyPEM     string `json:"publicKeyPEM"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		t.Fatal(err)
 	}
-	block, _ := pem.Decode([]byte(raw.PublicKey))
+	block, _ := pem.Decode([]byte(raw.PublicKeyPEM))
 	if block == nil {
 		t.Fatal("invalid PEM in publicKey")
 	}

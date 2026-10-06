@@ -8,11 +8,12 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/takimoto3/app-attest/cbor"
 )
 
-const maxX5CCerts = 16
+const maxX5CCerts = 8
 
 // expectedACL is the expected access policy hash (aclBlob) for macOS App Attest keys
 // under SIP and Full Security mode (OID 1.2.840.113635.100.8.6).
@@ -52,6 +53,52 @@ func (e Environment) String() string {
 		return "Production"
 	}
 	return "Invalid Environment"
+}
+
+// cborAttestKey is a bit flag for a required CBOR map key of AttestationObject.
+type cborAttestKey byte
+
+const (
+	cborAttestAuthData cborAttestKey = 1 << iota
+	cborAttestFmt
+	cborAttestStmt
+
+	cborAttestAll = cborAttestAuthData | cborAttestFmt | cborAttestStmt
+)
+
+func (k cborAttestKey) Names() string {
+	var names []string
+	if k&cborAttestAuthData != 0 {
+		names = append(names, "authData")
+	}
+	if k&cborAttestFmt != 0 {
+		names = append(names, "fmt")
+	}
+	if k&cborAttestStmt != 0 {
+		names = append(names, "attStmt")
+	}
+	return strings.Join(names, ", ")
+}
+
+// cborAttStmtKey is a bit flag for a required CBOR map key of AttStmt.
+type cborAttStmtKey byte
+
+const (
+	cborAttStmtReceipt cborAttStmtKey = 1 << iota
+	cborAttStmtX5c
+
+	cborAttStmtAll = cborAttStmtReceipt | cborAttStmtX5c
+)
+
+func (k cborAttStmtKey) Names() string {
+	var names []string
+	if k&cborAttStmtReceipt != 0 {
+		names = append(names, "receipt")
+	}
+	if k&cborAttStmtX5c != 0 {
+		names = append(names, "x5c")
+	}
+	return strings.Join(names, ", ")
 }
 
 // AttestationObject represents the CBOR-encoded attestation object returned by the authenticator.
@@ -133,14 +180,26 @@ func NewAttestationService(pool *x509.CertPool, appID string) *AttestationServic
 	return &AttestationService{RootCertPool: pool, AppID: appID}
 }
 
-// Verify validate a single attestation object and return result object.
-func (service *AttestationService) Verify(attestObj *AttestationObject, clientDataHash, keyID []byte) (*Result, error) {
-	return service.verify(iOS, attestObj, clientDataHash, keyID)
+// VerifyForiOS validates a single iOS attestation object and returns the result.
+//
+// appID is the App Identifier (format: teamID + "." + bundleID).
+func (service *AttestationService) VerifyForiOS(attestObj *AttestationObject, appID string, clientDataHash, keyID []byte) (*Result, error) {
+	return service.verify(iOS, attestObj, appID, clientDataHash, keyID)
 }
 
-func (service *AttestationService) verify(platform Platform, attestObj *AttestationObject, clientDataHash, keyID []byte) (*Result, error) {
+// Verify validates a single attestation object and returns the result.
+//
+// Deprecated: use VerifyForiOS, which takes the App ID explicitly.
+func (service *AttestationService) Verify(attestObj *AttestationObject, clientDataHash, keyID []byte) (*Result, error) {
+	return service.verify(iOS, attestObj, service.AppID, clientDataHash, keyID)
+}
+
+func (service *AttestationService) verify(platform Platform, attestObj *AttestationObject, identifier string, clientDataHash, keyID []byte) (*Result, error) {
 	if service.RootCertPool == nil {
 		return nil, errors.New("root certificate pool is nil")
+	}
+	if attestObj == nil {
+		return nil, errors.New("attestObj is nil")
 	}
 	if attestObj.Format != "apple-appattest" {
 		return nil, fmt.Errorf("invalid attestation format: %q", attestObj.Format)
@@ -263,11 +322,11 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	// prepare AuthenticatorData
 	authData := AuthenticatorData{}
 	if err = authData.Unmarshal(attestObj.AuthData, true); err != nil {
-		return nil, fmt.Errorf("authenticator data decoding failed")
+		return nil, fmt.Errorf("authenticator data decoding failed: %w", err)
 	}
 
 	// 6. Compute the SHA256 hash of your app’s App ID, and verify that this is the same as the authenticator data’s RP ID hash.
-	appIdHash := sha256.Sum256([]byte(service.AppID))
+	appIdHash := sha256.Sum256([]byte(identifier))
 	if !bytes.Equal(authData.RPIDHash[:], appIdHash[:]) {
 		return nil, ErrUnmatchRPIDHash
 	}
@@ -324,6 +383,8 @@ func verifyCredentialCertificate(credential *x509.Certificate, roots, intermedia
 //
 // Used during registration to parse the authenticator’s attestation response.
 func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
+	var gotKeys cborAttestKey
+
 	dec := cbor.NewDecoder(data)
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
@@ -350,6 +411,10 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 		}
 		switch key {
 		case "fmt":
+			if gotKeys&cborAttestFmt != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cborAttestFmt
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "fmt") at index %d: %w`, i, err)
@@ -363,6 +428,10 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 			}
 			ao.Format = val
 		case "authData":
+			if gotKeys&cborAttestAuthData != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cborAttestAuthData
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "authData") at index %d: %w`, i, err)
@@ -376,6 +445,10 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 			}
 			ao.AuthData = val
 		case "attStmt":
+			if gotKeys&cborAttestStmt != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cborAttestStmt
 			stmt := AttStmt{}
 			if err = stmt.UnmarshalCBOR(dec); err != nil {
 				return fmt.Errorf(`failed to unmarshal attStmt (key "attStmt"): %w`, err)
@@ -385,11 +458,17 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
 		}
 	}
+	if missing := cborAttestAll &^ gotKeys; missing != 0 {
+		return fmt.Errorf("%w: %s", ErrMissingKey, missing.Names())
+	}
+
 	return nil
 }
 
 // UnmarshalCBOR decodes the CBOR fields of the attestation statement (X5C and receipt).
 func (as *AttStmt) UnmarshalCBOR(dec *cbor.Decoder) error {
+	var gotKeys cborAttStmtKey
+
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
 		return fmt.Errorf("failed to read attStmt map header: %w", err)
@@ -416,6 +495,10 @@ func (as *AttStmt) UnmarshalCBOR(dec *cbor.Decoder) error {
 		}
 		switch key {
 		case "receipt":
+			if gotKeys&cborAttStmtReceipt != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cborAttStmtReceipt
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "receipt") at index %d: %w`, i, err)
@@ -429,6 +512,10 @@ func (as *AttStmt) UnmarshalCBOR(dec *cbor.Decoder) error {
 			}
 			as.Receipt = val
 		case "x5c":
+			if gotKeys&cborAttStmtX5c != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cborAttStmtX5c
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "x5c") at index %d: %w`, i, err)
@@ -463,5 +550,9 @@ func (as *AttStmt) UnmarshalCBOR(dec *cbor.Decoder) error {
 			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
 		}
 	}
+	if missing := cborAttStmtAll &^ gotKeys; missing != 0 {
+		return fmt.Errorf("%w: %s", ErrMissingKey, missing.Names())
+	}
+
 	return nil
 }
