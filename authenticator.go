@@ -119,7 +119,7 @@ func (auth *AuthenticatorData) Unmarshal(rawBytes []byte, requireCred bool) erro
 		dec := cbor.NewDecoder(r.UnreadBytes())
 		auth.CredentialData.CoseKey = CoseKey{}
 		if err := auth.CredentialData.CoseKey.UnmarshalCBOR(dec); err != nil {
-			return err
+			return fmt.Errorf("failed to parse COSE key: %w", err)
 		}
 		r.Advance(len(r.UnreadBytes()) - dec.Len())
 	}

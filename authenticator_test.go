@@ -485,7 +485,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 					item{cborText("unknown_key_01"), cborUint(1)},
 				),
 			),
-			wantErr: expectError("unknown key: unknown_key_01", attest.ErrUnknownKey),
+			wantErr: expectError("failed to parse extensions", attest.ErrUnknownKey),
 		},
 		"cose key parse error propagates": {
 			data: merge(
@@ -500,7 +500,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				),
 			),
 			requireCred: true,
-			wantErr:     expectError("unknown key: 9", attest.ErrUnknownKey),
+			wantErr:     expectError("failed to parse COSE key", attest.ErrUnknownKey),
 		},
 		"extensions not a map": {
 			data: merge(
