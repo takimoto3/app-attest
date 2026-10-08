@@ -75,11 +75,11 @@ func (v *ReceiptVerifier) Verify(encoded []byte, appID string, pubkey *ecdsa.Pub
 	return r, err
 }
 
-// Validate checks that the Receipt matches the expected app ID and public key,
-// has a valid type, and was created no more than MaxAge ago.
+// ParseAndVerify verifies the PKCS#7 signature and parses the payload.
+// It does NOT check the app ID, attested public key, creation time, or
+// the presence of the risk metric. Use Verify instead.
 //
-// Deprecated: use ReceiptVerifier.Verify, which verifies the signature and
-// validates the receipt in one call.
+// Deprecated: use Verify.
 func (v *ReceiptVerifier) ParseAndVerify(encoded []byte) (*Receipt, error) {
 	if v.RootCertPool == nil {
 		return nil, errors.New("verifier is not initialized: RootCertPool is nil")
@@ -137,8 +137,12 @@ func (v *ReceiptVerifier) verify(encoded []byte, appID string, pubkey *ecdsa.Pub
 	}
 
 	receipt := Receipt{MaxAge: defaultMaxAge}
-	if err := receipt.Unmarshal(attributes); err != nil {
+	hasRiskMetric, err := receipt.unmarshal(attributes)
+	if err != nil {
 		return nil, err
+	}
+	if receipt.Type == "RECEIPT" && !hasRiskMetric {
+		return nil, errors.New("risk metric missing (field 17) in RECEIPT")
 	}
 
 	// 4. Verify that the receipt contains the App ID of your app in field 2.
@@ -150,8 +154,8 @@ func (v *ReceiptVerifier) verify(encoded []byte, appID string, pubkey *ecdsa.Pub
 	// 5. Verify that the receipt’s creation time, given in field 12,
 	// is no more than five minutes old. This helps to thwart replay attacks.
 	delta := time.Since(receipt.CreationTime)
-	if delta > v.MaxAge {
-		return nil, fmt.Errorf("invalid receipt creation time delta=%s (allowed 0–%s)", delta, v.MaxAge)
+	if delta > v.maxAge() {
+		return nil, fmt.Errorf("invalid receipt creation time delta=%s (allowed 0–%s)", delta, v.maxAge())
 	}
 
 	// 6. Verify that the attested public key in field 3, encoded as a DER ASN.1 object,
@@ -166,6 +170,13 @@ func (v *ReceiptVerifier) verify(encoded []byte, appID string, pubkey *ecdsa.Pub
 	return &receipt, nil
 }
 
+func (v *ReceiptVerifier) maxAge() time.Duration {
+	if v.MaxAge > 0 {
+		return v.MaxAge
+	}
+	return defaultMaxAge
+}
+
 // Receipt holds the extracted fields from an App Attest receipt.
 type Receipt struct {
 	AppID          string           // ASN.1 Field:2
@@ -177,8 +188,8 @@ type Receipt struct {
 	Unknown        []Attribute      // ASN.1 Unknown Fields
 
 	// RiskMetric is field 17: the number of attested keys for the device over
-	// the past 30 days. Non-nil for RECEIPT (Verify rejects a RECEIPT without
-	// it), nil for ATTEST.
+	// the past 30 days. Present only in RECEIPT (Verify rejects a RECEIPT
+	// without it); 0 for ATTEST.
 	RiskMetric int // ASN.1 Field:17
 
 	// MaxAge is the allowed creation delta used by Validate.
@@ -190,13 +201,21 @@ type Receipt struct {
 
 // Unmarshal populates the Receipt fields from ASN.1 attributes.
 func (r *Receipt) Unmarshal(attributes []Attribute) error {
+	_, err := r.unmarshal(attributes)
+	return err
+}
+
+// unmarshal populates r from attributes. The returned bool reports whether
+// field 17 (RiskMetric) was present, so callers can tell "absent" from "0".
+func (r *Receipt) unmarshal(attributes []Attribute) (bool, error) {
+	hasRiskMetric := false
 	for _, attr := range attributes {
 		switch attr.Type {
 		case 2: // AppID
 			// Version 1: AppID is encoded as OCTET STRING containing the string
 			bytes, err := attr.unmarshalOctetString()
 			if err != nil {
-				return fmt.Errorf("failed to unmarshal AppID (field:%d): %w", attr.Type, err)
+				return false, fmt.Errorf("failed to unmarshal AppID (field:%d): %w", attr.Type, err)
 			}
 			r.AppID = string(bytes)
 		case 3: // Attested Public Key (X.509 certificate)
@@ -204,56 +223,57 @@ func (r *Receipt) Unmarshal(attributes []Attribute) error {
 			// The actual ECDSA public key can be extracted from the parsed certificate.
 			certDER, err := attr.unmarshalOctetString()
 			if err != nil {
-				return fmt.Errorf("failed to unmarshal Attested Public Key (field:%d): %w", attr.Type, err)
+				return false, fmt.Errorf("failed to unmarshal Attested Public Key (field:%d): %w", attr.Type, err)
 			}
 			cert, err := x509.ParseCertificate(certDER)
 			if err != nil {
-				return fmt.Errorf("failed to parse attested certificate: %w", err)
+				return false, fmt.Errorf("failed to parse attested certificate: %w", err)
 			}
 			pubkey, ok := cert.PublicKey.(*ecdsa.PublicKey)
 			if !ok {
-				return errors.New("parsed attested key is unsupported type (expected ECDSA)")
+				return false, errors.New("parsed attested key is unsupported type (expected ECDSA)")
 			}
 			r.PublicKey = pubkey
 		case 6: // Receipt Type
 			bytes, err := attr.unmarshalOctetString()
 			if err != nil {
-				return fmt.Errorf("failed to unmarshal Receipt Type (field:%d): %w", attr.Type, err)
+				return false, fmt.Errorf("failed to unmarshal Receipt Type (field:%d): %w", attr.Type, err)
 			}
 			r.Type = string(bytes)
 		case 12: // Creation Time
 			tm, err := attr.unmarshalTime()
 			if err != nil {
-				return fmt.Errorf("failed to unmarshal Creation Time (field:%d): %w", attr.Type, err)
+				return false, fmt.Errorf("failed to unmarshal Creation Time (field:%d): %w", attr.Type, err)
 			}
 			r.CreationTime = tm
 		case 17: // RiskMetric
 			bytes, err := attr.unmarshalOctetString()
 			if err != nil {
-				return fmt.Errorf("failed to unmarshal RiskMetric (field:%d): %w", attr.Type, err)
+				return false, fmt.Errorf("failed to unmarshal RiskMetric (field:%d): %w", attr.Type, err)
 			}
 			v, err := strconv.Atoi(string(bytes))
 			if err != nil {
-				return fmt.Errorf("failed to parse RiskMetric string value: %w", err)
+				return false, fmt.Errorf("failed to parse RiskMetric string value: %w", err)
 			}
 			r.RiskMetric = v
+			hasRiskMetric = true
 		case 19: // Not Before
 			tm, err := attr.unmarshalTime()
 			if err != nil {
-				return fmt.Errorf("failed to unmarshal Not Before (field:%d): %w", attr.Type, err)
+				return false, fmt.Errorf("failed to unmarshal Not Before (field:%d): %w", attr.Type, err)
 			}
 			r.NotBefore = tm
 		case 21: // Expiration Time
 			tm, err := attr.unmarshalTime()
 			if err != nil {
-				return fmt.Errorf("failed to unmarshal Expiration Time (field:%d): %w", attr.Type, err)
+				return false, fmt.Errorf("failed to unmarshal Expiration Time (field:%d): %w", attr.Type, err)
 			}
 			r.ExpirationTime = tm
 		default:
 			r.Unknown = append(r.Unknown, attr)
 		}
 	}
-	return nil
+	return hasRiskMetric, nil
 }
 
 // Validate checks that the Receipt matches the expected app ID and public key,

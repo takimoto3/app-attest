@@ -128,6 +128,7 @@ func tamperLastByte(data []byte) []byte {
 	return data
 }
 
+//nolint:staticcheck // exercising the deprecated API on purpose
 func TestReceiptVerifier_Verify(t *testing.T) {
 	pki := newTestPKI(t)
 
@@ -155,6 +156,7 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 
 	tests := map[string]struct {
 		certPool *x509.CertPool
+		maxAge   time.Duration
 		data     []byte
 		appID    string
 		pubkey   *ecdsa.PublicKey
@@ -251,7 +253,7 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 				RiskMetric:   42,
 			},
 		},
-		"tampered payload invalidates signature": {
+		"tampered signature": {
 			certPool: rootCA,
 			data: tamperLastByte(der(t, pki.leafCert, pki.leafKey, // tampered
 				receipt.Attribute{Type: 2, Raw: mustASN1OctetString([]byte("com.example.app")).Raw},
@@ -292,20 +294,149 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 			pubkey:   &correctKey.PublicKey,
 			wantErr:  expectError("failed to parse PKCS#7"),
 		},
+		"RECEIPT without risk metric (field 17)": {
+			certPool: rootCA,
+			data: der(t, pki.leafCert, pki.leafKey,
+				receipt.Attribute{Type: 2, Raw: mustASN1OctetString([]byte("com.example.app")).Raw},
+				receipt.Attribute{Type: 3, Raw: mustASN1OctetString(certDER).Raw},
+				receipt.Attribute{Type: 6, Raw: mustASN1OctetString([]byte("RECEIPT")).Raw},
+				receipt.Attribute{Type: 12, Raw: mustASN1OctetString([]byte(now.Add(-time.Minute).Format(time.RFC3339))).Raw},
+			),
+			appID:   "com.example.app",
+			pubkey:  &correctKey.PublicKey,
+			wantErr: expectError("risk metric missing (field 17)"),
+		},
+		"ATTEST without risk metric is valid": {
+			certPool: rootCA,
+			data: der(t, pki.leafCert, pki.leafKey,
+				receipt.Attribute{Type: 2, Raw: mustASN1OctetString([]byte("com.example.app")).Raw},
+				receipt.Attribute{Type: 3, Raw: mustASN1OctetString(certDER).Raw},
+				receipt.Attribute{Type: 6, Raw: mustASN1OctetString([]byte("ATTEST")).Raw},
+				receipt.Attribute{Type: 12, Raw: mustASN1OctetString([]byte(now.Add(-time.Minute).Format(time.RFC3339))).Raw},
+			),
+			appID:  "com.example.app",
+			pubkey: &correctKey.PublicKey,
+			want: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    &correctKey.PublicKey,
+				Type:         "ATTEST",
+				CreationTime: now.Add(-time.Minute).Truncate(time.Second),
+			},
+		},
+		"missing receipt type (field 6) skips risk metric check": {
+			certPool: rootCA,
+			data: der(t, pki.leafCert, pki.leafKey,
+				receipt.Attribute{Type: 2, Raw: mustASN1OctetString([]byte("com.example.app")).Raw},
+				receipt.Attribute{Type: 3, Raw: mustASN1OctetString(certDER).Raw},
+				receipt.Attribute{Type: 12, Raw: mustASN1OctetString([]byte(now.Add(-time.Minute).Format(time.RFC3339))).Raw},
+			),
+			appID:  "com.example.app",
+			pubkey: &correctKey.PublicKey,
+			want: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    &correctKey.PublicKey,
+				CreationTime: now.Add(-time.Minute).Truncate(time.Second),
+			},
+		},
+		"MaxAge longer than default (10m): 7m old accepted": {
+			certPool: rootCA,
+			maxAge:   10 * time.Minute,
+			data: der(t, pki.leafCert, pki.leafKey,
+				receipt.Attribute{Type: 2, Raw: mustASN1OctetString([]byte("com.example.app")).Raw},
+				receipt.Attribute{Type: 3, Raw: mustASN1OctetString(certDER).Raw},
+				receipt.Attribute{Type: 6, Raw: mustASN1OctetString([]byte("RECEIPT")).Raw},
+				receipt.Attribute{Type: 12, Raw: mustASN1OctetString([]byte(now.Add(-7 * time.Minute).Format(time.RFC3339))).Raw},
+				receipt.Attribute{Type: 17, Raw: mustASN1OctetString([]byte("42")).Raw},
+			),
+			appID:  "com.example.app",
+			pubkey: &correctKey.PublicKey,
+			want: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    &correctKey.PublicKey,
+				Type:         "RECEIPT",
+				CreationTime: now.Add(-7 * time.Minute).Truncate(time.Second),
+				RiskMetric:   42,
+			},
+		},
+		"MaxAge longer than age (10m): accepted": {
+			certPool: rootCA,
+			maxAge:   10 * time.Minute,
+			data: der(t, pki.leafCert, pki.leafKey,
+				receipt.Attribute{Type: 2, Raw: mustASN1OctetString([]byte("com.example.app")).Raw},
+				receipt.Attribute{Type: 3, Raw: mustASN1OctetString(certDER).Raw},
+				receipt.Attribute{Type: 6, Raw: mustASN1OctetString([]byte("RECEIPT")).Raw},
+				receipt.Attribute{Type: 12, Raw: mustASN1OctetString([]byte(now.Add(-2 * time.Minute).Format(time.RFC3339))).Raw},
+				receipt.Attribute{Type: 17, Raw: mustASN1OctetString([]byte("42")).Raw},
+			),
+			appID:  "com.example.app",
+			pubkey: &correctKey.PublicKey,
+			want: &receipt.Receipt{
+				AppID:        "com.example.app",
+				PublicKey:    &correctKey.PublicKey,
+				Type:         "RECEIPT",
+				CreationTime: now.Add(-2 * time.Minute).Truncate(time.Second),
+				RiskMetric:   42,
+			},
+		},
+		"MaxAge shorter than age (30s): rejected": {
+			certPool: rootCA,
+			maxAge:   30 * time.Second,
+			data: der(t, pki.leafCert, pki.leafKey,
+				receipt.Attribute{Type: 2, Raw: mustASN1OctetString([]byte("com.example.app")).Raw},
+				receipt.Attribute{Type: 3, Raw: mustASN1OctetString(certDER).Raw},
+				receipt.Attribute{Type: 6, Raw: mustASN1OctetString([]byte("RECEIPT")).Raw},
+				receipt.Attribute{Type: 12, Raw: mustASN1OctetString([]byte(now.Add(-2 * time.Minute).Format(time.RFC3339))).Raw},
+				receipt.Attribute{Type: 17, Raw: mustASN1OctetString([]byte("42")).Raw},
+			),
+			appID:   "com.example.app",
+			pubkey:  &correctKey.PublicKey,
+			wantErr: expectError("invalid receipt creation time delta="),
+		},
+	}
+	// Cases where the legacy ParseAndVerify+Validate path differs from Verify.
+	legacy := map[string]*wantError{
+		"invalid receipt type":                                   expectError("invalid receipt type"),
+		"creation time in the future":                            expectError("invalid receipt creation time delta="),
+		"RECEIPT without risk metric (field 17)":                 nil, // Validate does not check field 17
+		"missing receipt type (field 6) skips risk metric check": expectError("invalid receipt type"),
+		"MaxAge shorter than age (30s): rejected":                nil, // legacy path ignores ReceiptVerifier.MaxAge
+		"MaxAge longer than default (10m): 7m old accepted":      expectError("invalid receipt creation time delta="),
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			verifier := receipt.NewReceiptVerifier(tt.certPool)
-			got, err := verifier.Verify(tt.data, tt.appID, tt.pubkey)
-			if !assertErr(t, err, tt.wantErr) {
-				return
-			}
+			t.Run("Verify", func(t *testing.T) {
+				verifier := receipt.ReceiptVerifier{RootCertPool: tt.certPool, MaxAge: tt.maxAge}
+				got, err := verifier.Verify(tt.data, tt.appID, tt.pubkey)
+				if !assertErr(t, err, tt.wantErr) {
+					return
+				}
 
-			opts := cmpopts.IgnoreFields(receipt.Receipt{}, "Unknown", "MaxAge")
-			if diff := cmp.Diff(tt.want, got, opts); diff != "" {
-				t.Errorf("Mismatch (-want +got):\n%s", diff)
-			}
+				opts := cmpopts.IgnoreFields(receipt.Receipt{}, "Unknown", "MaxAge")
+				if diff := cmp.Diff(tt.want, got, opts); diff != "" {
+					t.Errorf("Mismatch (-want +got):\n%s", diff)
+				}
+			})
+			t.Run("ParseAndVerify", func(t *testing.T) {
+				verifier := receipt.NewReceiptVerifier(tt.certPool)
+				got, err := verifier.ParseAndVerify(tt.data)
+				if err == nil {
+					err = got.Validate(tt.appID, tt.pubkey)
+				}
+				if wantErr, ok := legacy[name]; ok {
+					assertErr(t, err, wantErr)
+					return
+				}
+
+				if !assertErr(t, err, tt.wantErr) {
+					return
+				}
+
+				opts := cmpopts.IgnoreFields(receipt.Receipt{}, "Unknown", "MaxAge")
+				if diff := cmp.Diff(tt.want, got, opts); diff != "" {
+					t.Errorf("Mismatch (-want +got):\n%s", diff)
+				}
+			})
 		})
 	}
 }
