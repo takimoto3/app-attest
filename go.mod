@@ -1,8 +1,8 @@
 module github.com/takimoto3/app-attest
 
-go 1.25.0
+go 1.26.0
 
-toolchain go1.26.6
+toolchain go1.27.2
 
 require (
 	github.com/google/go-cmp v0.7.0
@@ -12,7 +12,7 @@ require (
 )
 
 require (
-	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 )
