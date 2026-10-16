@@ -33,9 +33,8 @@ const (
 	SimpleFloat MajorType = 7 // Simple values / Floating-point numbers
 )
 
-// Decoder is a lightweight, zero-allocation CBOR decoder.
-// It reads data directly from a provided byte slice, avoiding intermediate buffers.
-// The decoder maintains a read position (`pos`) that advances as data is consumed.
+// Decoder is a lightweight CBOR decoder that reads directly from
+// a byte slice and avoids unnecessary allocations.
 type Decoder struct {
 	data []byte // Raw CBOR-encoded input
 	pos  int    // Current read offset in `data`

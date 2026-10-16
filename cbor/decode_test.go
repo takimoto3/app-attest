@@ -66,6 +66,24 @@ func TestDecodeInt(t *testing.T) {
 		"neg 300":        {[]byte{0x39, 0x01, 0x2c}, -301, nil}, // -301
 		"uint max int64": {[]byte{0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, math.MaxInt64, nil},
 		"uint overflow":  {[]byte{0x1b, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 0, ErrIntegerOverflow},
+		"neg min int64": {
+			[]byte{
+				0x3b,
+				0x7f, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff,
+			},
+			math.MinInt64,
+			nil,
+		},
+		"neg overflow": {
+			[]byte{
+				0x3b,
+				0x80, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+			},
+			0,
+			ErrIntegerOverflow,
+		},
 	}
 
 	for name, tt := range tests {
@@ -76,7 +94,7 @@ func TestDecodeInt(t *testing.T) {
 				t.Fatalf("ReadHeader error: %v", err)
 			}
 			val, err := dec.ReadInt(mt, ai)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("readInt error: %v", err)
 			}
 
@@ -84,6 +102,31 @@ func TestDecodeInt(t *testing.T) {
 				t.Errorf("got %d, want %d", val, tt.want)
 			}
 		})
+	}
+}
+
+func TestDecoder_ReadByteStringUnexpectedEOF(t *testing.T) {
+	// The length is consumed, but the payload is incomplete.
+	data := []byte{0x58, 0x03, 0x01}
+	dec := NewDecoder(data)
+
+	_, ai, err := dec.ReadHeader()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = dec.ReadByteString(ai)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("ReadByteString() error = %v, want %v",
+			err, io.ErrUnexpectedEOF)
+	}
+
+	if got, want := dec.pos, 2; got != want {
+		t.Errorf("pos = %d, want %d", got, want)
+	}
+
+	if got, want := dec.Len(), 1; got != want {
+		t.Errorf("Len() = %d, want %d", got, want)
 	}
 }
 
@@ -124,9 +167,12 @@ func TestDecodeTextString(t *testing.T) {
 		want    string
 		wantErr error
 	}{
-		"short text":    {[]byte{0x63, 'f', 'o', 'o'}, "foo", nil},                   // 0x63 → len=3
-		"1 byte len":    {[]byte{0x78, 0x05, 'h', 'e', 'l', 'l', 'o'}, "hello", nil}, // ai=24, 1 byte length
-		"invalid UTF-8": {[]byte{0x62, 0xff, 0xfe}, "", ErrInvalidString},
+		"short text":                   {[]byte{0x63, 'f', 'o', 'o'}, "foo", nil},                   // 0x63 → len=3
+		"1 byte len":                   {[]byte{0x78, 0x05, 'h', 'e', 'l', 'l', 'o'}, "hello", nil}, // ai=24, 1 byte length
+		"invalid UTF-8":                {[]byte{0x62, 0xff, 0xfe}, "", ErrInvalidString},
+		"overlong encoding":            {[]byte{0x62, 0xc0, 0xaf}, "", ErrInvalidString},
+		"invalid continuation byte":    {[]byte{0x63, 0xe2, 0x28, 0xa1}, "", ErrInvalidString},
+		"truncated multibyte sequence": {[]byte{0x62, 0xe2, 0x82}, "", ErrInvalidString},
 	}
 
 	for name, tt := range tests {
@@ -137,7 +183,7 @@ func TestDecodeTextString(t *testing.T) {
 				t.Fatalf("ReadHeader error: %v", err)
 			}
 			got, err := dec.ReadTextString(ai)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("DecodeTextString error: %v", err)
 			}
 			if got != tt.want {
@@ -167,7 +213,7 @@ func TestDecodeUnsafeTextString(t *testing.T) {
 			}
 
 			got, err := dec.ReadUnsafeTextString(ai)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("ReadUnsafeTextString error: %v", err)
 			}
 
