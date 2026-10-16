@@ -2,10 +2,6 @@ package fraud
 
 import "testing"
 
-func MaxResponseBodySize() int64 {
-	return maxResponseBodySize
-}
-
 func (c *Client) SetEndpointForTest(u string) { c.endpoint = u }
 func (c *Client) EndpointForTest() string     { return c.endpoint }
 func (c *Client) RespBodyLimitForTest() int64 { return c.respBodyLimit }

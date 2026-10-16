@@ -97,7 +97,7 @@ func TestNewClient(t *testing.T) {
 		"MaxInt64 response body limit is ignored": {
 			opts:         []any{fraud.WithResponseBodyLimit(math.MaxInt64)},
 			wantEndpoint: fraud.ProductionHost + fraud.Path,
-			wantLimit:    fraud.MaxResponseBodySize(),
+			wantLimit:    1 << 20,
 		},
 	}
 	for name, tt := range tests {
@@ -127,8 +127,9 @@ func TestDo_Request(t *testing.T) {
 		if r.URL.Path != fraud.Path {
 			t.Errorf("path = %s, want %s", r.URL.Path, fraud.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer dummy" {
-			t.Errorf("Authorization = %q, want %q", got, "Bearer dummy")
+		want := "Bearer dummy"
+		if got := r.Header.Get("Authorization"); got != want {
+			t.Errorf("Authorization = %q, want %q", got, want)
 		}
 		b, _ := io.ReadAll(r.Body)
 		if string(b) != wantBody {
