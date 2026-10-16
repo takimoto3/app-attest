@@ -141,6 +141,9 @@ func (v *ReceiptVerifier) verify(encoded []byte, appID string, pubkey *ecdsa.Pub
 	if err != nil {
 		return nil, err
 	}
+	if receipt.Type != "ATTEST" && receipt.Type != "RECEIPT" {
+		return nil, fmt.Errorf("invalid receipt type (field 6): %q", receipt.Type)
+	}
 	if receipt.Type == "RECEIPT" && !hasRiskMetric {
 		return nil, errors.New("risk metric missing (field 17) in RECEIPT")
 	}

@@ -243,15 +243,9 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 				receipt.Attribute{Type: 12, Raw: mustASN1OctetString([]byte(now.Add(-time.Minute).Format(time.RFC3339))).Raw},
 				receipt.Attribute{Type: 17, Raw: mustASN1OctetString([]byte("42")).Raw},
 			),
-			appID:  "com.example.app",
-			pubkey: &correctKey.PublicKey,
-			want: &receipt.Receipt{
-				AppID:        "com.example.app",
-				PublicKey:    &correctKey.PublicKey,
-				Type:         "BOGUS",
-				CreationTime: now.Add(-time.Minute).Truncate(time.Second),
-				RiskMetric:   42,
-			},
+			appID:   "com.example.app",
+			pubkey:  &correctKey.PublicKey,
+			wantErr: expectError("invalid receipt type (field 6)"),
 		},
 		"tampered signature": {
 			certPool: rootCA,
@@ -323,20 +317,16 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 				CreationTime: now.Add(-time.Minute).Truncate(time.Second),
 			},
 		},
-		"missing receipt type (field 6) skips risk metric check": {
+		"missing receipt type (field 6)": {
 			certPool: rootCA,
 			data: der(t, pki.leafCert, pki.leafKey,
 				receipt.Attribute{Type: 2, Raw: mustASN1OctetString([]byte("com.example.app")).Raw},
 				receipt.Attribute{Type: 3, Raw: mustASN1OctetString(certDER).Raw},
 				receipt.Attribute{Type: 12, Raw: mustASN1OctetString([]byte(now.Add(-time.Minute).Format(time.RFC3339))).Raw},
 			),
-			appID:  "com.example.app",
-			pubkey: &correctKey.PublicKey,
-			want: &receipt.Receipt{
-				AppID:        "com.example.app",
-				PublicKey:    &correctKey.PublicKey,
-				CreationTime: now.Add(-time.Minute).Truncate(time.Second),
-			},
+			appID:   "com.example.app",
+			pubkey:  &correctKey.PublicKey,
+			wantErr: expectError("invalid receipt type (field 6)"),
 		},
 		"MaxAge longer than default (10m): 7m old accepted": {
 			certPool: rootCA,
@@ -395,12 +385,12 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 	}
 	// Cases where the legacy ParseAndVerify+Validate path differs from Verify.
 	legacy := map[string]*wantError{
-		"invalid receipt type":                                   expectError("invalid receipt type"),
-		"creation time in the future":                            expectError("invalid receipt creation time delta="),
-		"RECEIPT without risk metric (field 17)":                 nil, // Validate does not check field 17
-		"missing receipt type (field 6) skips risk metric check": expectError("invalid receipt type"),
-		"MaxAge shorter than age (30s): rejected":                nil, // legacy path ignores ReceiptVerifier.MaxAge
-		"MaxAge longer than default (10m): 7m old accepted":      expectError("invalid receipt creation time delta="),
+		"invalid receipt type":                              expectError("invalid receipt type"),
+		"creation time in the future":                       expectError("invalid receipt creation time delta="),
+		"RECEIPT without risk metric (field 17)":            nil, // Validate does not check field 17
+		"missing receipt type (field 6)":                    expectError("invalid receipt type"),
+		"MaxAge shorter than age (30s): rejected":           nil, // legacy path ignores ReceiptVerifier.MaxAge
+		"MaxAge longer than default (10m): 7m old accepted": expectError("invalid receipt creation time delta="),
 	}
 
 	for name, tt := range tests {
