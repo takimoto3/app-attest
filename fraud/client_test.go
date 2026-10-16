@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,8 +24,6 @@ type mockToken struct{}
 
 func (*mockToken) GetToken(time.Time) (string, error) { return "dummy", nil }
 func (*mockToken) SetLogger(*slog.Logger)             {}
-
-const wantAuth = "bearer dummy"
 
 var quiet = appleapi.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
@@ -93,7 +92,13 @@ func TestNewClient(t *testing.T) {
 			wantErr: expectError("unsupported option")},
 		"unknown type int": {
 			opts:    []any{42},
-			wantErr: expectError("unsupported option")},
+			wantErr: expectError("unsupported option"),
+		},
+		"MaxInt64 response body limit is ignored": {
+			opts:         []any{fraud.WithResponseBodyLimit(math.MaxInt64)},
+			wantEndpoint: fraud.ProductionHost + fraud.Path,
+			wantLimit:    fraud.MaxResponseBodySize(),
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -122,8 +127,8 @@ func TestDo_Request(t *testing.T) {
 		if r.URL.Path != fraud.Path {
 			t.Errorf("path = %s, want %s", r.URL.Path, fraud.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != wantAuth {
-			t.Errorf("Authorization = %q, want %q", got, wantAuth)
+		if got := r.Header.Get("Authorization"); got != "Bearer dummy" {
+			t.Errorf("Authorization = %q, want %q", got, "Bearer dummy")
 		}
 		b, _ := io.ReadAll(r.Body)
 		if string(b) != wantBody {

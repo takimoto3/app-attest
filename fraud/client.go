@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -81,9 +82,10 @@ type Option func(*config)
 // Values <= 0 are ignored.
 func WithResponseBodyLimit(n int64) Option {
 	return func(c *config) {
-		if n > 0 {
-			c.respBodyLimit = n
+		if n <= 0 || n == math.MaxInt64 {
+			return
 		}
+		c.respBodyLimit = n
 	}
 }
 
