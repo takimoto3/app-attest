@@ -19,18 +19,20 @@ import (
 func generateTestCert(t *testing.T, cn string) *x509.Certificate {
 	t.Helper()
 
+	now := time.Now()
+
 	priv, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		SerialNumber: big.NewInt(now.UnixNano()),
 		Subject: pkix.Name{
 			CommonName: cn,
 		},
-		NotBefore: time.Now().Add(-time.Hour),
-		NotAfter:  time.Now().Add(time.Hour),
+		NotBefore: now.Add(-time.Hour),
+		NotAfter:  now.Add(time.Hour),
 		KeyUsage:  x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 	}
 
@@ -45,18 +47,6 @@ func generateTestCert(t *testing.T, cn string) *x509.Certificate {
 	}
 
 	return cert
-}
-
-// writeTempPEMFile writes the given certificate in PEM format.
-func writeTempPEMFile(t *testing.T, cert *x509.Certificate) string {
-	t.Helper()
-
-	pemData := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
-	path := filepath.Join(t.TempDir(), cert.Subject.CommonName+".pem")
-	if err := os.WriteFile(path, pemData, 0600); err != nil {
-		t.Fatalf("failed to write PEM file: %v", err)
-	}
-	return path
 }
 
 // writeTempDERFile writes the given certificate in DER format.
@@ -85,6 +75,20 @@ func writeTempMultiDERFile(t *testing.T, certs ...*x509.Certificate) string {
 	return path
 }
 
+func writeTempPEMFileWithExt(t *testing.T, cert *x509.Certificate, ext string) string {
+	t.Helper()
+
+	pemData := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Raw,
+	})
+	path := filepath.Join(t.TempDir(), cert.Subject.CommonName+ext)
+	if err := os.WriteFile(path, pemData, 0600); err != nil {
+		t.Fatalf("failed to write PEM file: %v", err)
+	}
+	return path
+}
+
 // writeTempFile writes arbitrary data to a temporary file with given extension.
 func writeTempFile(t *testing.T, ext string, data []byte) string {
 	t.Helper()
@@ -101,55 +105,79 @@ func TestLoadCertFiles(t *testing.T) {
 	cert1 := generateTestCert(t, "test1")
 	cert2 := generateTestCert(t, "test2")
 
-	pemPath := writeTempPEMFile(t, cert1)
+	pemPath := writeTempPEMFileWithExt(t, cert1, ".pem")
 	derPath := writeTempDERFile(t, cert1)
+	derPath2 := writeTempDERFile(t, cert2)
 	multiDERPath := writeTempMultiDERFile(t, cert1, cert2)
-	invalidPath := writeTempFile(t, ".pem", []byte("not a valid certificate"))
+	invalidPEMPath := writeTempFile(t, ".pem", []byte("not a valid certificate"))
+	invalidDERPath := writeTempFile(t, ".cer", []byte("not a valid certificate"))
+	emptyPEMPath := writeTempFile(t, ".pem", nil)
 	txtPath := writeTempFile(t, ".txt", []byte("unsupported format"))
+	missingPath := filepath.Join(t.TempDir(), "missing.pem")
 
-	tests := []struct {
-		name    string
-		paths   []string
-		wantErr bool
+	tests := map[string]struct {
+		paths     []string
+		wantCerts []*x509.Certificate
+		wantErr   bool
 	}{
-		{
-			name:    "valid PEM file",
-			paths:   []string{pemPath},
-			wantErr: false,
-		},
-		{
-			name:    "valid single DER file",
-			paths:   []string{derPath},
-			wantErr: false,
-		},
-		{
-			name:    "valid multiple DER certs in one file",
-			paths:   []string{multiDERPath},
-			wantErr: false,
-		},
-		{
-			name:    "multiple valid files (PEM + DER)",
-			paths:   []string{pemPath, derPath},
-			wantErr: false,
-		},
-		{
-			name:    "invalid PEM file",
-			paths:   []string{invalidPath},
+		"no files": {
 			wantErr: true,
 		},
-		{
-			name:    "unsupported file extension",
+		"valid PEM file": {
+			paths:     []string{pemPath},
+			wantCerts: []*x509.Certificate{cert1},
+		},
+		"valid single DER file": {
+			paths:     []string{derPath},
+			wantCerts: []*x509.Certificate{cert1},
+		},
+		"valid multiple DER certs in one file": {
+			paths:     []string{multiDERPath},
+			wantCerts: []*x509.Certificate{cert1, cert2},
+		},
+		"multiple valid files (PEM + DER)": {
+			paths:     []string{pemPath, derPath2},
+			wantCerts: []*x509.Certificate{cert1, cert2},
+		},
+		"PEM certificate in CER file": {
+			paths:     []string{writeTempPEMFileWithExt(t, cert2, ".cer")},
+			wantCerts: []*x509.Certificate{cert2},
+		},
+		"invalid PEM file": {
+			paths:   []string{invalidPEMPath},
+			wantErr: true,
+		},
+		"invalid DER file": {
+			paths:   []string{invalidDERPath},
+			wantErr: true,
+		},
+		"empty PEM file": {
+			paths:   []string{emptyPEMPath},
+			wantErr: true,
+		},
+		"missing file": {
+			paths:   []string{missingPath},
+			wantErr: true,
+		},
+		"unsupported file extension": {
 			paths:   []string{txtPath},
+			wantErr: true,
+		},
+		"valid file followed by missing file": {
+			paths:   []string{pemPath, missingPath},
 			wantErr: true,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
 			pool, err := certs.LoadCertFiles(tt.paths...)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("expected error but got nil")
+					t.Fatal("expected error but got nil")
+				}
+				if pool != nil {
+					t.Fatal("expected nil CertPool on error")
 				}
 				return
 			}
@@ -158,20 +186,18 @@ func TestLoadCertFiles(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if pool == nil {
-				t.Fatalf("CertPool is nil")
+				t.Fatal("CertPool is nil")
 			}
 
-			// Verify at least one of the test subjects exists in the pool
-			found := false
-			for _, subj := range pool.Subjects() {
-				if string(subj) == string(cert1.RawSubject) ||
-					string(subj) == string(cert2.RawSubject) {
-					found = true
-					break
-				}
+			subjects := make(map[string]struct{}, len(pool.Subjects()))
+			for _, subject := range pool.Subjects() {
+				subjects[string(subject)] = struct{}{}
 			}
-			if !found {
-				t.Errorf("expected certificate subject not found in pool")
+
+			for _, cert := range tt.wantCerts {
+				if _, ok := subjects[string(cert.RawSubject)]; !ok {
+					t.Errorf("certificate subject %q not found in pool", cert.Subject.CommonName)
+				}
 			}
 		})
 	}
