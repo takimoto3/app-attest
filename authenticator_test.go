@@ -337,11 +337,11 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				binary.BigEndian.AppendUint16(nil, uint16(len(rawCredentialID))), // CredID Len
 				rawCredentialID,                                                  // CredID
 				cborMap( // Cose Key
-					item{cborUint(1), cborUint(2)},                       // ktv: EC2
-					item{cborUint(3), cborNegInt(-7)},                    // alg: ES256
-					item{cborNegInt(-1), cborUint(1)},                    // crv: P-256
-					item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())}, // X
-					item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
+					item{cborUint(1), cborUint(2)},                                           // ktv: EC2
+					item{cborUint(3), cborNegInt(-7)},                                        // alg: ES256
+					item{cborNegInt(-1), cborUint(1)},                                        // crv: P-256
+					item{cborNegInt(-2), cborBytes(publicKey.X.FillBytes(make([]byte, 32)))}, // X
+					item{cborNegInt(-3), cborBytes(publicKey.Y.FillBytes(make([]byte, 32)))}, // Y
 				),
 				cborMap( // Extensions
 					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})}, // apple_validation_category_01
@@ -360,8 +360,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 						Kty: 2,
 						Alg: -7,
 						Crv: 1,
-						X:   publicKey.X.Bytes(),
-						Y:   publicKey.Y.Bytes(),
+						X:   publicKey.X.FillBytes(make([]byte, 32)),
+						Y:   publicKey.Y.FillBytes(make([]byte, 32)),
 					},
 				},
 				AppleValidationCategory: 1,
@@ -377,11 +377,11 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				binary.BigEndian.AppendUint16(nil, uint16(len(rawCredentialID))), // CredID Len
 				rawCredentialID,                                                  // CredID
 				cborMap( // Cose Key
-					item{cborUint(1), cborUint(2)},                       // ktv: EC2
-					item{cborUint(3), cborNegInt(-7)},                    // alg: ES256
-					item{cborNegInt(-1), cborUint(1)},                    // crv: P-256
-					item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())}, // X
-					item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
+					item{cborUint(1), cborUint(2)},                                           // ktv: EC2
+					item{cborUint(3), cborNegInt(-7)},                                        // alg: ES256
+					item{cborNegInt(-1), cborUint(1)},                                        // crv: P-256
+					item{cborNegInt(-2), cborBytes(publicKey.X.FillBytes(make([]byte, 32)))}, // X
+					item{cborNegInt(-3), cborBytes(publicKey.Y.FillBytes(make([]byte, 32)))}, // Y
 				),
 			),
 			requireCred: true,
@@ -396,8 +396,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 						Kty: 2,
 						Alg: -7,
 						Crv: 1,
-						X:   publicKey.X.Bytes(),
-						Y:   publicKey.Y.Bytes(),
+						X:   publicKey.X.FillBytes(make([]byte, 32)),
+						Y:   publicKey.Y.FillBytes(make([]byte, 32)),
 					},
 				},
 			},

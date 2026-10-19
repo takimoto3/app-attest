@@ -801,6 +801,36 @@ func TestAttestationService_Verify(t *testing.T) {
 			keyID:          keyID[:],
 			wantErr:        expectError("invalid key algorithm"),
 		},
+		"empty clientDataHash": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: developmentAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, developmentAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: []byte{},
+			keyID:          keyID[:],
+			wantErr:        expectError("credCert extension does not match nonce"),
+		},
+		"short clientDataHash": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: developmentAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, developmentAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: make([]byte, 31),
+			keyID:          keyID[:],
+			wantErr:        expectError("credCert extension does not match nonce"),
+		},
 	}
 
 	for name, tt := range tests {

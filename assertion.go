@@ -58,10 +58,10 @@ type AssertionService struct {
 // responsibility; this package only compares it with the value passed to
 // VerifyWithState.
 type AssertionState struct {
-	AppID     string           // "<TeamID>.<BundleID>" recorded at attestation time
-	PublicKey *ecdsa.PublicKey // key saved from the attestation
-	Challenge string           // challenge the server issued for this assertion
-	Counter   uint32           // last accepted sign count (0 if none yet)
+	AppID             string           // "<TeamID>.<BundleID>" recorded at attestation time
+	PublicKey         *ecdsa.PublicKey // key saved from the attestation
+	OriginalChallenge string           // challenge the server issued for this assertion
+	Counter           uint32           // last accepted sign count (0 if none yet)
 }
 
 type AssertionResult struct {
@@ -89,10 +89,10 @@ type AssertionResult struct {
 // AssertionService can be shared across requests.
 func (service *AssertionService) Verify(assertObject *AssertionObject, challenge string, clientData []byte) (uint32, error) {
 	state := AssertionState{
-		AppID:     service.AppID,
-		PublicKey: service.PublicKey,
-		Challenge: service.Challenge,
-		Counter:   service.Counter,
+		AppID:             service.AppID,
+		PublicKey:         service.PublicKey,
+		OriginalChallenge: service.Challenge,
+		Counter:           service.Counter,
 	}
 	result, err := service.verify(assertObject, challenge, clientData, state)
 	if err != nil {
@@ -115,15 +115,18 @@ func (service *AssertionService) VerifyWithState(assertObject *AssertionObject, 
 	return service.verify(assertObject, challenge, clientData, state)
 }
 
-func (service *AssertionService) verify(assertObject *AssertionObject, challenge string, clientData []byte, state AssertionState) (*AssertionResult, error) {
+func (service *AssertionService) verify(assertObject *AssertionObject, clientChallenge string, clientData []byte, state AssertionState) (*AssertionResult, error) {
 	// Input checks: reject unusable input before touching crypto.
 	if assertObject == nil {
 		return nil, errors.New("assertion object is nil")
 	}
-	if challenge == "" {
+	if clientChallenge == "" {
 		return nil, errors.New("challenge is empty")
 	}
-	if !isKeyComplete(state.PublicKey) {
+	if state.AppID == "" {
+		return nil, errors.New("assertion state: AppID is empty")
+	}
+	if !isPublicKeyComplete(state.PublicKey) {
 		return nil, errors.New("assertion state: PublicKey is nil or incomplete")
 	}
 
@@ -136,8 +139,12 @@ func (service *AssertionService) verify(assertObject *AssertionObject, challenge
 	hash.Write(clientDataHash[:])
 	nonce := hash.Sum(nil)
 
+	// Apple Secure Enclave treats 'nonce' as a raw message payload and signs it using ECDSA-SHA256,
+	// effectively calculating SHA256(nonce) internally before P-256 signing.
+	// Since ecdsa.VerifyASN1 expects the final digest directly, we must compute SHA256(nonce) here.
+	nonceHash := sha256.Sum256(nonce)
+
 	// 3. Use the public key that you store from the attestation object to verify that the assertion’s signature is valid for nonce.
-	nonceHash := sha256.Sum256(nonce[:])
 	if ok := ecdsa.VerifyASN1(state.PublicKey, nonceHash[:], assertObject.Signature); !ok {
 		return nil, ErrInvalidSignature
 	}
@@ -158,8 +165,8 @@ func (service *AssertionService) verify(assertObject *AssertionObject, challenge
 	}
 
 	// 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
-	if challenge != state.Challenge {
-		return nil, fmt.Errorf("invalid challenge expected: %s, received: %s", state.Challenge, challenge)
+	if clientChallenge != state.OriginalChallenge {
+		return nil, errors.New("invalid challenge")
 	}
 
 	return &AssertionResult{
@@ -245,6 +252,8 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 	return nil
 }
 
-func isKeyComplete(k *ecdsa.PublicKey) bool {
+// isPublicKeyComplete reports whether k has all fields required for ECDSA
+// signature verification.
+func isPublicKeyComplete(k *ecdsa.PublicKey) bool {
 	return k != nil && k.Curve != nil && k.X != nil && k.Y != nil
 }
