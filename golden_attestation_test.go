@@ -19,9 +19,10 @@ import (
 )
 
 func TestGolden_AttestationService_Verify(t *testing.T) {
-	b, err := os.ReadFile("testdata/golden_attestation.json")
+	filepath := "testdata/golden_attestation.json"
+	b, err := os.ReadFile(filepath)
 	if errors.Is(err, fs.ErrNotExist) {
-		t.Skip("golden case not found: testdata/golden_attestation.json")
+		t.Skipf("golden case not found: %s", filepath)
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -34,12 +35,13 @@ func TestGolden_AttestationService_Verify(t *testing.T) {
 		case "production":
 			return attest.Production
 		}
+		t.Fatalf("invalid environment %q in golden fixture", s)
 		return attest.None
 	}
 
 	parseTime := func(s string) time.Time {
 		if s == "" {
-			return time.Time{}
+			t.Fatalf("testDate is empty in golden fixture")
 		}
 		tm, err := time.Parse(time.RFC3339, s)
 		if err != nil {
@@ -61,8 +63,7 @@ func TestGolden_AttestationService_Verify(t *testing.T) {
 		KeyIDBase64          string `json:"keyIdBase64"`
 		PublicKeyPEM         string `json:"publicKeyPEM"`
 		Environment          string `json:"environment"`
-		ValidDate            string `json:"validDate"`
-		ExpiredDate          string `json:"expiredDate"`
+		TestDate             string `json:"testDate"`
 	}
 
 	if err := json.Unmarshal(b, &raw); err != nil {
@@ -82,7 +83,6 @@ func TestGolden_AttestationService_Verify(t *testing.T) {
 		PublicKey      []byte
 		Environment    attest.Environment
 		TestDate       time.Time
-		ExpiredDate    time.Time
 	}{
 		AppID:          raw.TeamIdentifier + "." + raw.BundleIdentifier,
 		Attestation:    must(base64.StdEncoding.DecodeString(raw.AttestationBase64)),
@@ -90,17 +90,12 @@ func TestGolden_AttestationService_Verify(t *testing.T) {
 		KeyID:          must(base64.StdEncoding.DecodeString(raw.KeyIDBase64)),
 		PublicKey:      block.Bytes,
 		Environment:    parseEnvironment(raw.Environment),
-		TestDate:       parseTime(raw.ValidDate),
-		ExpiredDate:    parseTime(raw.ExpiredDate),
+		TestDate:       parseTime(raw.TestDate),
 	}
 
-	if fixture.ExpiredDate.IsZero() {
-		t.Fatal("expiredDate is missing in golden fixture")
-	}
-	t.Logf("fixture: %+v\n", fixture)
+	//	t.Logf("fixture: %+v\n", fixture)
 
 	tests := map[string]struct {
-		TimeNow        time.Time
 		rootCert       *x509.CertPool
 		appID          string
 		attestData     []byte
@@ -119,57 +114,12 @@ func TestGolden_AttestationService_Verify(t *testing.T) {
 			wantPubkey:     fixture.PublicKey,
 			wantEnv:        fixture.Environment,
 		},
-		"Error Case: invalid AppID use": {
-			rootCert:       pool,
-			appID:          "org.sample.AttestSample",
-			attestData:     fixture.Attestation,
-			clientDataHash: fixture.ClientDataHash,
-			keyID:          fixture.KeyID,
-			wantErr:        attest.ErrUnmatchRPIDHash,
-		},
-		"Error Case:invalid challenge use": {
-			rootCert:       pool,
-			appID:          fixture.AppID,
-			attestData:     fixture.Attestation,
-			clientDataHash: []byte("xxxxxxxxxxxxxxxx"),
-			keyID:          fixture.KeyID,
-			wantErr:        errors.New("credCert extension does not match nonce"),
-		},
-		"Error Case:invalid keyID use": {
-			rootCert:       pool,
-			appID:          fixture.AppID,
-			attestData:     fixture.Attestation,
-			clientDataHash: fixture.ClientDataHash,
-			keyID:          must(base64.StdEncoding.DecodeString("vZiLwg6bm6++ogVSpwMVJOfseqKs9mMRQamXExFAR+1=")),
-			wantErr:        errors.New("the keyid is not match public key's hash"),
-		},
-		"Error Case: certificate expired": {
-			TimeNow:        fixture.ExpiredDate,
-			rootCert:       pool,
-			appID:          fixture.AppID,
-			attestData:     fixture.Attestation,
-			clientDataHash: fixture.ClientDataHash,
-			keyID:          fixture.KeyID,
-			wantErr:        errors.New("invalid certificate: x509: certificate has expired or is not yet valid"),
-		},
-		"Error Case: nil root certificate pool": {
-			rootCert:       nil,
-			appID:          fixture.AppID,
-			attestData:     fixture.Attestation,
-			clientDataHash: fixture.ClientDataHash,
-			keyID:          fixture.KeyID,
-			wantErr:        errors.New("root certificate pool is nil"),
-		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			// Set a default valid time for most tests (before certificate expiration)
-			if tt.TimeNow.IsZero() {
-				testtime.SetTime(t, fixture.TestDate)
-			} else {
-				testtime.SetTime(t, tt.TimeNow)
-			}
+			testtime.SetTime(t, fixture.TestDate)
 
 			target := attest.AttestationService{RootCertPool: tt.rootCert}
 

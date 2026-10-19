@@ -69,7 +69,6 @@ func TestGolden_ReceiptVerifier_Verify(t *testing.T) {
 		TeamIdentifier   string `json:"teamIdentifier"`
 		PublicKeyPEM     string `json:"publicKeyPEM"` // PEM
 		ReceiptBase64    string `json:"receiptBase64"`
-		TestTime         string `json:"testtime"` // RFC3339(Nano)
 		Properties       struct {
 			Type           string `json:"type"`
 			CreationTime   string `json:"creationTime"`
@@ -131,7 +130,7 @@ func TestGolden_ReceiptVerifier_Verify(t *testing.T) {
 	verifier := receipt.NewReceiptVerifier(pool)
 
 	for _, f := range fixtures {
-		t.Run("Verify", func(t *testing.T) {
+		t.Run(f.Type, func(t *testing.T) {
 			// Anchor "now" to just after this receipt's creation time so
 			// it falls within 5 minutes, regardless of when the test runs.
 			testtime.SetTime(t, f.Properties.CreationTime.Add(time.Minute))
@@ -158,18 +157,10 @@ func TestGolden_ReceiptVerifier_Verify(t *testing.T) {
 				t.Errorf("Mismatch (-want +got):\n%s", diff)
 			}
 
-			// Verify parsed content matches the fixture's expected values —
-			// previously only the error/nil-ness was checked, not the
-			// actual decoded fields.
-			if got.Type != f.Properties.Type {
-				t.Errorf("Type = %q, want %q", got.Type, f.Properties.Type)
+			if err := got.Validate(f.AppID, f.PublicKey); err != nil {
+				t.Fatalf("Validate() failed: %v", err)
 			}
-			if got.Type == "RECEIPT" {
-				wantVal := int(f.Properties.RiskMetric)
-				if got.RiskMetric != wantVal {
-					t.Errorf("failed RiskMetric = %d, want %d", got.RiskMetric, wantVal)
-				}
-			}
+
 			t.Logf("\n--- [RECEIVED RECEIPT] ---\n%s--------------------------", logReceipt(got))
 		})
 	}

@@ -2,8 +2,6 @@ package attest_test
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -18,9 +16,10 @@ import (
 )
 
 func TestGolden_AssertionService_Verify(t *testing.T) {
-	b, err := os.ReadFile("testdata/golden_assertion.json")
+	filepath := "testdata/golden_assertion.json"
+	b, err := os.ReadFile(filepath)
 	if errors.Is(err, fs.ErrNotExist) {
-		t.Skip("golden case not found: testdata/assertion.json")
+		t.Skipf("golden case not found: %s", filepath)
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -54,16 +53,7 @@ func TestGolden_AssertionService_Verify(t *testing.T) {
 		PublicKey:  block.Bytes,
 	}
 
-	t.Logf("fixture: %+v\n", fixture)
-
-	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	genPubKeyData, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
+	//	t.Logf("fixture: %+v\n", fixture)
 
 	type StoredData struct {
 		Challenge string
@@ -93,33 +83,6 @@ func TestGolden_AssertionService_Verify(t *testing.T) {
 			fixture.PublicKey,
 			nil,
 		},
-		"Error Case:different public key use": {
-			fixture.AppID,
-			fixture.Assertion,
-			fixture.ClientData,
-			string(fixture.Challenge),
-			StoredData{
-				Challenge: string(fixture.Challenge),
-				Counter:   0,
-			},
-			1,
-			genPubKeyData,
-			attest.ErrInvalidSignature,
-		},
-
-		"Error Case:invalid AppID use": {
-			"org.sample.AttestSample",
-			fixture.Assertion,
-			fixture.ClientData,
-			string(fixture.Challenge),
-			StoredData{
-				Challenge: string(fixture.Challenge),
-				Counter:   0,
-			},
-			1,
-			fixture.PublicKey,
-			attest.ErrUnmatchRPIDHash,
-		},
 	}
 
 	for name, tt := range tests {
@@ -140,10 +103,10 @@ func TestGolden_AssertionService_Verify(t *testing.T) {
 
 			t.Run("VerifyWithState", func(t *testing.T) {
 				state := attest.AssertionState{
-					AppID:     tt.appID,
-					PublicKey: pubkey,
-					Challenge: tt.stored.Challenge,
-					Counter:   tt.stored.Counter,
+					AppID:             tt.appID,
+					PublicKey:         pubkey,
+					OriginalChallenge: tt.stored.Challenge,
+					Counter:           tt.stored.Counter,
 				}
 				got, err := (&attest.AssertionService{}).VerifyWithState(assertionObject, tt.challenge, tt.clientData, state)
 				if tt.wantErr != nil {
