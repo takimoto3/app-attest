@@ -10,6 +10,9 @@ import (
 // LoadCertFiles loads multiple certificate files (.pem or .cer) into an x509.CertPool.
 // It automatically detects whether .cer files are in PEM or DER format.
 func LoadCertFiles(paths ...string) (*x509.CertPool, error) {
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("at least one certificate file is required")
+	}
 	pool := x509.NewCertPool()
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
@@ -30,19 +33,16 @@ func LoadCertFiles(paths ...string) (*x509.CertPool, error) {
 			}
 			// Try multiple DER certs
 			certs, err := x509.ParseCertificates(data)
-			if err == nil && len(certs) > 0 {
-				for _, cert := range certs {
-					pool.AddCert(cert)
-				}
-				continue
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse DER certificates in %s: %w", path, err)
 			}
-			// Try single DER cert
-			cert, err := x509.ParseCertificate(data)
-			if err == nil {
+			if len(certs) == 0 {
+				return nil, fmt.Errorf("no certificates found in %s", path)
+			}
+
+			for _, cert := range certs {
 				pool.AddCert(cert)
-				continue
 			}
-			return nil, fmt.Errorf("no valid certificate found in %s (PEM or DER)", path)
 
 		default:
 			return nil, fmt.Errorf("unsupported file extension: %s. Expected .pem or .cer", path)

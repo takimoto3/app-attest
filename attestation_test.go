@@ -1,171 +1,1169 @@
 package attest_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
-	"errors"
-	"reflect"
-	"strings"
+	"crypto/x509/pkix"
+	"encoding/asn1"
+	"encoding/base64"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"math/big"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	attest "github.com/takimoto3/app-attest"
-	"github.com/takimoto3/app-attest/certs"
-	"github.com/takimoto3/app-attest/testutils"
-	"github.com/tenntenn/testtime"
+	"github.com/takimoto3/app-attest/cbor"
 )
 
+var credCertOID = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 2}
+
+type testChain struct {
+	root            *x509.Certificate
+	rootDER         []byte
+	rootKey         *ecdsa.PrivateKey
+	intermediate    *x509.Certificate
+	intermediateDER []byte
+	intermediateKey *ecdsa.PrivateKey
+	credKey         *ecdsa.PrivateKey
+}
+
+type certOption func(*x509.Certificate)
+
+func withNotAfter(t time.Time) certOption {
+	return func(c *x509.Certificate) { c.NotAfter = t }
+}
+
+func withNotBefore(t time.Time) certOption {
+	return func(c *x509.Certificate) { c.NotBefore = t }
+}
+
+func withoutExtension(oid asn1.ObjectIdentifier) certOption {
+	return func(c *x509.Certificate) {
+		var kept []pkix.Extension
+		for _, e := range c.ExtraExtensions {
+			if !e.Id.Equal(oid) {
+				kept = append(kept, e)
+			}
+		}
+		c.ExtraExtensions = kept
+	}
+}
+
+func withCorruptedExtension(oid asn1.ObjectIdentifier, value []byte) certOption {
+	return func(c *x509.Certificate) {
+		for i, e := range c.ExtraExtensions {
+			if e.Id.Equal(oid) {
+				c.ExtraExtensions[i].Value = value
+			}
+		}
+	}
+}
+
+// aclBlobOID is the OID for the macOS access-control-list extension (1.2.840.113635.100.8.6).
+var aclBlobOID = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 6}
+
+// expectedACLBase64 mirrors the constant used by the production code, so tests
+// can build a certificate whose aclBlob matches (or intentionally does not match).
+const expectedACLBase64 = "MEAMAjExMDowCQwCb2uhAwEB/zAJDAJvYaEDAQH/MAsMBG9kZWyhAwEB/zAVDARvc2duoAYMBHJzZWMwBaYDAgEB"
+
+// withACLBlob attaches a correctly DER-wrapped aclBlob extension (OCTET STRING inside
+// a SEQUENCE) with the given raw blob value.
+func withACLBlob(blob []byte) certOption {
+	return func(c *x509.Certificate) {
+		innerOctet, err := asn1.Marshal(blob)
+		if err != nil {
+			panic(err)
+		}
+		wrapped := asn1.RawValue{
+			Class:      asn1.ClassContextSpecific,
+			Tag:        1,
+			IsCompound: true,
+			Bytes:      innerOctet,
+		}
+		seq, err := asn1.Marshal([]asn1.RawValue{wrapped})
+		if err != nil {
+			panic(err)
+		}
+		c.ExtraExtensions = append(c.ExtraExtensions, pkix.Extension{Id: aclBlobOID, Value: seq})
+	}
+}
+
+func decodeExpectedACL(t *testing.T) []byte {
+	t.Helper()
+	b, err := base64.StdEncoding.DecodeString(expectedACLBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func newTestChain(t testing.TB) *testChain {
+	t.Helper()
+	now := time.Now()
+
+	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test root"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	rootDER, err := x509.CreateCertificate(rand.Reader, rootTmpl, rootTmpl, &rootKey.PublicKey, rootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := x509.ParseCertificate(rootDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Intermediate CA
+	intermediateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intermediateDER, err := x509.CreateCertificate(
+		rand.Reader,
+		&x509.Certificate{
+			SerialNumber:          big.NewInt(2),
+			Subject:               pkix.Name{CommonName: "test intermediate"},
+			NotBefore:             now.Add(-time.Hour),
+			NotAfter:              now.Add(time.Hour),
+			IsCA:                  true,
+			BasicConstraintsValid: true,
+			KeyUsage:              x509.KeyUsageCertSign,
+		},
+		root,
+		&intermediateKey.PublicKey,
+		rootKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intermediate, err := x509.ParseCertificate(intermediateDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	credKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return &testChain{
+		root:            root,
+		rootDER:         rootDER,
+		rootKey:         rootKey,
+		intermediate:    intermediate,
+		intermediateDER: intermediateDER,
+		intermediateKey: intermediateKey,
+		credKey:         credKey,
+	}
+}
+
+// replace returns a copy of parts with parts[i] replaced by v.
+// The original slice is left untouched, so it can be reused as a base
+// template for multiple test cases without risk of mutation leaking
+// between them.
+func replace(parts [][]byte, i int, v []byte) [][]byte {
+	out := make([][]byte, len(parts))
+	copy(out, parts)
+	out[i] = v
+	return out
+}
+
+// buildCredCert builds the leaf credential cert with a correct nonce extension
+// derived from authData + clientDataHash, unless overridden by opts.
+func (tc *testChain) buildCredCert(t testing.TB, authData, clientDataHash []byte, opts ...certOption) []byte {
+	t.Helper()
+	now := time.Now()
+
+	h := sha256.New()
+	h.Write(authData)
+	h.Write(clientDataHash)
+	nonce := h.Sum(nil)
+
+	// inner: OCTET STRING nonce TLV
+	innerOctet, err := asn1.Marshal(nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// wrapped: [1] { OCTET STRING nonce } wrapped with context-specific constructed tag
+	wrapped := asn1.RawValue{
+		Class:      asn1.ClassContextSpecific,
+		Tag:        1,
+		IsCompound: true,
+		Bytes:      innerOctet,
+	}
+
+	// seq: SEQUENCE { wrapped }
+	seq, err := asn1.Marshal([]asn1.RawValue{wrapped})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test credential"},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(time.Hour),
+		ExtraExtensions: []pkix.Extension{
+			{Id: credCertOID, Value: seq},
+		},
+	}
+	for _, opt := range opts {
+		opt(tmpl)
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tc.intermediate, &tc.credKey.PublicKey, tc.intermediateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
+// buildCredCertWithKey behaves like buildCredCert but signs the credential
+// certificate for an arbitrary public key, so tests can exercise credential
+// certificates whose key type isn't ECDSA.
+func (tc *testChain) buildCredCertWithKey(t testing.TB, pub any, authData, clientDataHash []byte) []byte {
+	t.Helper()
+	now := time.Now()
+
+	h := sha256.New()
+	h.Write(authData)
+	h.Write(clientDataHash)
+	nonce := h.Sum(nil)
+
+	innerOctet, err := asn1.Marshal(nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := asn1.RawValue{
+		Class:      asn1.ClassContextSpecific,
+		Tag:        1,
+		IsCompound: true,
+		Bytes:      innerOctet,
+	}
+	seq, err := asn1.Marshal([]asn1.RawValue{wrapped})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test credential"},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(time.Hour),
+		ExtraExtensions: []pkix.Extension{
+			{Id: credCertOID, Value: seq},
+		},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tc.intermediate, pub, tc.intermediateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
 func TestAttestationService_Verify(t *testing.T) {
-	testData, err := testutils.LoadTestData()
+	chain := newTestChain(t)
+	rootCA := x509.NewCertPool()
+	rootCA.AddCert(chain.root)
+
+	otherChain := newTestChain(t)
+	otherRootCA := x509.NewCertPool()
+	otherRootCA.AddCert(otherChain.root)
+
+	const appID = "1234567890.com.example.myapp"
+	rpIDHash := sha2(appID)
+
+	challenge := []byte("example_server_challenge")
+	clientDataHash := sha256.Sum256(challenge)
+
+	wrongChallenge := []byte("WRONG_example_server_challenge")
+	wrongClientDataHash := sha256.Sum256(wrongChallenge)
+
+	pubBytes, err := chain.credKey.PublicKey.Bytes() // X9.62 uncompressed point format
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID := sha256.Sum256(pubBytes)
+
+	wrongKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongPubBytes, err := wrongKey.PublicKey.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongKeyID := sha256.Sum256(wrongPubBytes)
+
+	// credentialID represents the hash of the public key in the spec, so use the same value as keyID
+	credentialID := keyID[:]
+
+	// --- Success Cases ---
+	extensions := cborMap(
+		item{cborText("apple_bundle_version_01"), cborText("1.0")},
+		item{cborText("apple_validation_category_01"), []byte{0x44, 0x01, 0x00, 0x00, 0x00}},
+	)
+	cosekey := cborMap( // COSE Key
+		item{cborUint(1), cborUint(2)},
+		item{cborUint(3), cborNegInt(-7)},
+		item{cborNegInt(-1), cborUint(1)},
+		item{cborNegInt(-2), cborBytes(chain.credKey.PublicKey.X.FillBytes(make([]byte, 32)))},
+		item{cborNegInt(-3), cborBytes(chain.credKey.PublicKey.Y.FillBytes(make([]byte, 32)))},
+	)
+
+	// production: aaguid = "appattest" + 7 x 0x00
+	authDataParts := [][]byte{
+		rpIDHash,
+		[]byte{0x40},
+		[]byte{0x00, 0x00, 0x00, 0x00},
+		[]byte("appattest\x00\x00\x00\x00\x00\x00\x00"),
+		binary.BigEndian.AppendUint16(nil, uint16(len(credentialID))),
+		credentialID,
+	}
+
+	noExtensionsAuthData := merge(append(authDataParts, cosekey)...)
+
+	authDataParts = append(append(authDataParts, cosekey), extensions)
+	productionAuthData := merge(authDataParts...)
+
+	// development: aaguid = "appattestdevelop"
+	developmentAuthData := merge(replace(authDataParts, 3, []byte("appattestdevelop"))...)
+	// development: aaguid = "appattestsandbox"
+	sandboxAuthData := merge(replace(authDataParts, 3, []byte("appattestsandbox"))...)
+
+	// --- Error Cases ---
+
+	// #18: authData is too short and fails to unmarshal
+	shortAuthData := productionAuthData[:10]
+
+	// #19: attested credential data flag is not set
+	noAttestedFlagAuthData := merge(
+		rpIDHash,
+		[]byte{0x00}, // flag: no attested credential
+		[]byte{0x00, 0x00, 0x00, 0x00},
+	)
+
+	// #21: counter is not zero
+	counterNonZeroAuthData := merge(replace(authDataParts, 2, []byte{0x00, 0x00, 0x00, 0x01})...)
+
+	// #22: aaguid is neither production nor development
+	invalidAaguidAuthData := merge(replace(authDataParts, 3, []byte("invalid-aaguid\x00\x00"))...)
+
+	// #23: credentialID does not match keyID
+	mismatchedCredentialID := []byte("different-credential-id-32bytes\x00")
+	credMismatchAuthData := merge(replace(authDataParts, 5, mismatchedCredentialID)...)
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	tests := map[string]struct {
-		appID          string
-		attestData     []byte
+		rootCA         *x509.CertPool
+		identifier     string
+		attestObject   *attest.AttestationObject
 		clientDataHash []byte
 		keyID          []byte
-		wantErr        error
-		wantPubkey     []byte
-		wantEnv        attest.Environment
+		want           *attest.Result
+		wantErr        *wantError
 	}{
-		"Success Case": {
-			testData.Attestation.AppID,
-			testData.Attestation.Attestation,
-			testData.Attestation.ClientDataHash,
-			testData.Attestation.KeyId,
-			nil,
-			testData.Attestation.PublicKey,
-			testData.Attestation.Environment,
+		"success (production)": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			want: &attest.Result{
+				Environment:             attest.Production,
+				Receipt:                 []byte("dummy-receipt-bytes"),
+				PublicKey:               &chain.credKey.PublicKey,
+				AppleBundleVersion:      "1.0",
+				AppleValidationCategory: 1,
+			},
 		},
-		"Error Case: invalid AppID use": {
-			"org.sample.AttestSample",
-			testData.Attestation.Attestation,
-			testData.Attestation.ClientDataHash,
-			testData.Attestation.KeyId,
-			attest.ErrUnmatchRPIDHash,
-			testData.Attestation.PublicKey,
-			testData.Attestation.Environment,
+		"success (development: appattestdevelop)": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: developmentAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, developmentAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			want: &attest.Result{
+				Environment:             attest.Development,
+				Receipt:                 []byte("dummy-receipt-bytes"),
+				PublicKey:               &chain.credKey.PublicKey,
+				AppleBundleVersion:      "1.0",
+				AppleValidationCategory: 1,
+			},
 		},
-		"Error Case:invalid challenge use": {
-			testData.Attestation.AppID,
-			testData.Attestation.Attestation,
-			[]byte("xxxxxxxxxxxxxxxx"),
-			testData.Attestation.KeyId,
-			errors.New("credCert extension does not match nonce"),
-			testData.Attestation.PublicKey,
-			testData.Attestation.Environment,
+		"success (development: appattestsandbox)": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: sandboxAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, sandboxAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			want: &attest.Result{
+				Environment:             attest.Development,
+				Receipt:                 []byte("dummy-receipt-bytes"),
+				PublicKey:               &chain.credKey.PublicKey,
+				AppleBundleVersion:      "1.0",
+				AppleValidationCategory: 1,
+			},
 		},
-		"Error Case:invalid keyID use": {
-			testData.Attestation.AppID,
-			testData.Attestation.Attestation,
-			testData.Attestation.ClientDataHash,
-			testutils.DecodeB64("vZiLwg6bm6++ogVSpwMVJOfseqKs9mMRQamXExFAR+1="),
-			errors.New("the keyid is not match public key's hash"),
-			testData.Attestation.PublicKey,
-			testData.Attestation.Environment,
+		"attestObject is nil": {
+			rootCA:         rootCA,
+			identifier:     appID,
+			attestObject:   nil,
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("attestObj is nil"),
 		},
-		"Error Case: certificate expired": {
-			testData.Attestation.AppID,
-			testData.Attestation.Attestation,
-			testData.Attestation.ClientDataHash,
-			testData.Attestation.KeyId,
-			errors.New("invalid certificate: x509: certificate has expired or is not yet valid"),
-			testData.Attestation.PublicKey,
-			testData.Attestation.Environment,
+		"RootCertPool is nil": {
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				Format: "packed",
+				AttStmt: attest.AttStmt{
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("root certificate pool is nil"),
+		},
+		"invalid format": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				Format: "packed",
+				AttStmt: attest.AttStmt{
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError(`invalid attestation format: "packed"`),
+		},
+		"AuthData is empty": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: nil,
+				Format:   "apple-appattest",
+				AttStmt:  attest.AttStmt{},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("authData: empty data"),
+		},
+		"AttStmt has no data": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt:  attest.AttStmt{},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("AttStmt: empty data"),
+		},
+		"x5c chain too short": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:])}, // only 1 entry
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("x5c chain must contain credential and intermediate certificates"),
+		},
+		"credential cert malformed DER": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{[]byte("not a certificate"), chain.rootDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("parsing certificate from ASN.1 data failed"),
+		},
+		"intermediate cert malformed DER": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:]), []byte("not a certificate")},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("parsing intermediate certificate at index 1 failed"),
+		},
+		"certificate expired": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C: [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:],
+						withNotAfter(time.Now().Add(-time.Hour))), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("expired"),
+		},
+		"missing credCert extension": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C: [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:],
+						withoutExtension(credCertOID)), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("certificate didn't contain credCert extension"),
+		},
+		"wrong client data hash (nonce mismatch)": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: wrongClientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("credCert extension does not match nonce"),
+		},
+		"wrong keyID": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          wrongKeyID[:],
+			wantErr:        expectError("the keyid is not match public key's hash"),
+		},
+		"authData too short": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: shortAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, shortAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("authenticator data decoding failed"),
+		},
+		"missing attested credential data flag": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: noAttestedFlagAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, noAttestedFlagAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("authenticator data decoding failed: failed to read AAGUID: unexpected EOF"),
+		},
+		"wrong appID (RPIDHash mismatch)": {
+			rootCA:     rootCA,
+			identifier: "OTHER.com.example.app",
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError(attest.ErrUnmatchRPIDHash),
+		},
+		"counter not zero": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: counterNonZeroAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, counterNonZeroAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("authenticator data counter was not 0"),
+		},
+		"invalid aaguid": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: invalidAaguidAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, invalidAaguidAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("invalid aaguid value"),
+		},
+		"credential ID mismatch": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: credMismatchAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, credMismatchAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("credential ID did not equal the provided key identifier"),
+		},
+		"corrupted credCert extension (invalid ASN.1)": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C: [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:],
+						withCorruptedExtension(credCertOID, []byte{0xFF, 0xFF})), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("credCert extension parse error"),
+		},
+		"certificate not yet valid": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C: [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:],
+						withNotBefore(time.Now().Add(time.Hour))), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("expired or is not yet valid"),
+		},
+		"untrusted root (different CA)": {
+			rootCA:     otherRootCA, // chain is valid, but the trusted root is a different CA
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("unknown authority"),
+		},
+		"intermediate certificate missing": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:]), chain.rootDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("unknown authority"),
+		},
+		"missing extensions (no apple_bundle_version_01 / apple_validation_category_01)": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: noExtensionsAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, noExtensionsAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			want: &attest.Result{
+				Environment:             attest.Production,
+				Receipt:                 []byte("dummy-receipt-bytes"),
+				PublicKey:               &chain.credKey.PublicKey,
+				AppleBundleVersion:      "",
+				AppleValidationCategory: 0,
+			},
+		},
+		"credential cert uses non-ECDSA key": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCertWithKey(t, &rsaKey.PublicKey, productionAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("invalid key algorithm"),
+		},
+		"empty clientDataHash": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: developmentAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, developmentAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: []byte{},
+			keyID:          keyID[:],
+			wantErr:        expectError("credCert extension does not match nonce"),
+		},
+		"short clientDataHash": {
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: developmentAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{chain.buildCredCert(t, developmentAuthData, clientDataHash[:]), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: make([]byte, 31),
+			keyID:          keyID[:],
+			wantErr:        expectError("credCert extension does not match nonce"),
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			// Set a default valid time for most tests (before certificate expiration)
-			testtime.SetTime(t, testData.Attestation.ValidDate)
-			if strings.HasSuffix(name, "certificate expired") {
-				testtime.SetTime(t, testData.Attestation.ExpiredDate)
+			t.Run("VerifyForiOS", func(t *testing.T) {
+				target := attest.AttestationService{RootCertPool: tt.rootCA}
+
+				result, err := target.VerifyForiOS(tt.attestObject, tt.identifier, tt.clientDataHash, tt.keyID)
+				if !assertErr(t, err, tt.wantErr) {
+					return
+				}
+
+				if diff := cmp.Diff(tt.want, result); diff != "" {
+					t.Errorf("Verify() mismatch (-want +got):\n%s", diff)
+				}
+			})
+			t.Run("Verify", func(t *testing.T) {
+				target := attest.NewAttestationService(tt.rootCA, tt.identifier)
+
+				result, err := target.Verify(tt.attestObject, tt.clientDataHash, tt.keyID)
+				if !assertErr(t, err, tt.wantErr) {
+					return
+				}
+
+				if diff := cmp.Diff(tt.want, result); diff != "" {
+					t.Errorf("Verify() mismatch (-want +got):\n%s", diff)
+				}
+			})
+		})
+	}
+}
+
+func TestAttestationObject_UnmarshalCBOR(t *testing.T) {
+	tests := map[string]struct {
+		data    []byte
+		want    *attest.AttestationObject
+		wantErr *wantError
+	}{
+		"valid: fmt, authData, attStmt with x5c and receipt": {
+			data: cborMap(
+				item{cborText("fmt"), cborText("apple-appattest")},
+				item{cborText("authData"), cborBytes([]byte("auth-data-bytes"))},
+				item{cborText("attStmt"), cborMap(
+					item{cborText("x5c"), merge(
+						[]byte{0x80 | 2}, // CBOR array header: major type 4 (array), 2 items
+						cborBytes([]byte("leaf-cert-der")),
+						cborBytes([]byte("intermediate-cert-der")),
+					)},
+					item{cborText("receipt"), cborBytes([]byte("receipt-bytes"))},
+				)},
+			),
+			want: &attest.AttestationObject{
+				Format:   "apple-appattest",
+				AuthData: []byte("auth-data-bytes"),
+				AttStmt: attest.AttStmt{
+					X5C:     [][]byte{[]byte("leaf-cert-der"), []byte("intermediate-cert-der")},
+					Receipt: []byte("receipt-bytes"),
+				},
+			},
+		},
+		"empty data": {
+			data:    []byte{},
+			wantErr: expectError(io.ErrUnexpectedEOF),
+		},
+		"not a map": {
+			data:    cborUint(1),
+			wantErr: expectError(fmt.Sprintf("expected CBOR type Map (major type 5) for AttestationObject, got major type %d", cbor.UnsignedInt)),
+		},
+		"map key not text": {
+			data: cborMap(
+				item{cborUint(1), cborText("apple-appattest")},
+			),
+			wantErr: expectError(fmt.Sprintf("expected string map key at index %d, got major type %d", 0, cbor.UnsignedInt)),
+		},
+		"fmt wrong value type": {
+			data: cborMap(
+				item{cborText("fmt"), cborUint(1)},
+			),
+			wantErr: expectError(fmt.Sprintf(`expected string for format (key "fmt"), got major type %d`, cbor.UnsignedInt)),
+		},
+		"authData wrong value type": {
+			data: cborMap(
+				item{cborText("authData"), cborText("not-bytes")},
+			),
+			wantErr: expectError(fmt.Sprintf(`expected bytestring for authData (key "authData"), got major type %d`, cbor.TextString)),
+		},
+		"attStmt not a map": {
+			data: cborMap(
+				item{cborText("attStmt"), cborUint(1)},
+			),
+			wantErr: expectError(fmt.Sprintf(`failed to unmarshal attStmt (key "attStmt"): expected CBOR type Map (major type 5) for attStmt, got major type %d`, cbor.UnsignedInt)),
+		},
+		"unknown top-level key": {
+			data: cborMap(
+				item{cborText("unknown"), cborUint(1)},
+			),
+			wantErr: expectError(attest.ErrUnknownKey),
+		},
+		"unknown key with unsupported nested map fails": {
+			data: cborMap(
+				item{cborText("unknown"), cborMap(item{cborUint(1), cborUint(2)})}, // unknown key with nested map value
+			),
+			wantErr: expectError(attest.ErrUnknownKey),
+		},
+		"missing authData and attStmt": {
+			data:    cborMap(item{cborText("fmt"), cborText("apple-appattest")}),
+			wantErr: expectError(attest.ErrMissingKey),
+		},
+		"missing fmt and attStmt": {
+			data:    cborMap(item{cborText("authData"), cborBytes([]byte("auth-data-bytes"))}),
+			wantErr: expectError(attest.ErrMissingKey),
+		},
+		"missing fmt and authData": {
+			data: cborMap(
+				item{cborText("attStmt"), cborMap(
+					item{cborText("x5c"), []byte{0x80}},
+					item{cborText("receipt"), cborBytes([]byte("r"))},
+				)},
+			),
+			wantErr: expectError(attest.ErrMissingKey),
+		},
+		"missing attStmt": {
+			data: cborMap(
+				item{cborText("fmt"), cborText("apple-appattest")},
+				item{cborText("authData"), cborBytes([]byte("auth-data-bytes"))},
+			),
+			wantErr: expectError(attest.ErrMissingKey),
+		},
+		"empty map": {
+			data:    []byte{0xA0},
+			wantErr: expectError(attest.ErrMissingKey),
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var ao attest.AttestationObject
+			err := ao.UnmarshalCBOR(tt.data)
+			if !assertErr(t, err, tt.wantErr) {
+				return
 			}
 
-			pool, err := certs.LoadCertFiles("testdata/Apple_App_Attestation_Root_CA.pem")
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			target := attest.NewAttestationService(pool, tt.appID)
-
-			attestObject := attest.AttestationObject{}
-			if err := attestObject.UnmarshalCBOR(tt.attestData); err != nil {
-				t.Fatal(err)
-			}
-
-			result, err := target.Verify(&attestObject, tt.clientDataHash, tt.keyID)
-			if !IsEquals(tt.wantErr, err) {
-				t.Fatal(err)
-			}
-
-			if result != nil {
-				gotPubkey, err := x509.MarshalPKIXPublicKey(result.PublicKey)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if diff := cmp.Diff(tt.wantPubkey, gotPubkey); diff != "" {
-					t.Errorf("Mismatch (-want +got):\n%s", diff)
-				}
-				if tt.wantEnv != result.Environment {
-					t.Errorf("invaild enviroment value want: %s, got: %s", tt.wantEnv, result.Environment)
-				}
-				if len(result.Receipt) == 0 {
-					t.Error("no recipe in the result")
-				}
-				t.Logf("receipt size: %d", len(result.Receipt))
+			if diff := cmp.Diff(tt.want, &ao); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
 }
 
-func IsEquals(target, err error) bool {
-	if target == nil || err == nil {
-		return err == target
+func TestAttStmt_UnmarshalCBOR(t *testing.T) {
+	tests := map[string]struct {
+		data    []byte
+		want    *attest.AttStmt
+		wantErr *wantError
+	}{
+		"valid: x5c with two certs and receipt": {
+			data: cborMap(
+				item{cborText("x5c"), merge(
+					[]byte{0x80 | 2}, // CBOR array header: major type 4 (array), 2 items
+					cborBytes([]byte("leaf-cert-der")),
+					cborBytes([]byte("intermediate-cert-der")),
+				)},
+				item{cborText("receipt"), cborBytes([]byte("receipt-bytes"))},
+			),
+			want: &attest.AttStmt{
+				X5C:     [][]byte{[]byte("leaf-cert-der"), []byte("intermediate-cert-der")},
+				Receipt: []byte("receipt-bytes"),
+			},
+		},
+		"empty data": {
+			data:    []byte{},
+			wantErr: expectError(io.ErrUnexpectedEOF),
+		},
+		"not a map": {
+			data:    cborUint(1),
+			wantErr: expectError(fmt.Sprintf("expected CBOR type Map (major type 5) for attStmt, got major type %d", cbor.UnsignedInt)),
+		},
+		"map key not text": {
+			data: cborMap(
+				item{cborUint(1), cborBytes([]byte("x"))},
+			),
+			wantErr: expectError(fmt.Sprintf("expected string map key at index %d, got major type %d", 0, cbor.UnsignedInt)),
+		},
+		"receipt wrong value type": {
+			data: cborMap(
+				item{cborText("receipt"), cborUint(1)},
+			),
+			wantErr: expectError(fmt.Sprintf(`expected bytestring for receipt (key "receipt"), got major type %d`, cbor.UnsignedInt)),
+		},
+		"x5c not an array": {
+			data: cborMap(
+				item{cborText("x5c"), cborUint(1)},
+			),
+			wantErr: expectError(fmt.Sprintf(`expected array for x5c (key "x5c"), got major type %d`, cbor.UnsignedInt)),
+		},
+		"x5c array item wrong type": {
+			data: cborMap(
+				item{cborText("x5c"), merge(
+					[]byte{0x80 | 1}, // CBOR array header: major type 4 (array), 1 item
+					cborText("not-bytes"),
+				)},
+			),
+			wantErr: expectError(fmt.Sprintf("expected bytestring in x5c array at index %d, got major type %d", 0, cbor.TextString)),
+		},
+		"x5c empty array": {
+			data: cborMap(
+				item{cborText("x5c"), []byte{0x80}}, // CBOR array header: major type 4, 0 items
+				item{cborText("receipt"), cborBytes([]byte("receipt-bytes"))},
+			),
+			want: &attest.AttStmt{
+				X5C:     [][]byte{},
+				Receipt: []byte("receipt-bytes"),
+			},
+		},
+		"unknown key": {
+			data: cborMap(
+				item{cborText("unknown"), cborUint(1)},
+			),
+			wantErr: expectError(attest.ErrUnknownKey),
+		},
+		"unknown key with unsupported nested map fails": {
+			data: cborMap(
+				item{cborText("unknown"), cborMap(item{cborUint(1), cborUint(2)})}, // unknown key with nested map value
+			),
+			wantErr: expectError(attest.ErrUnknownKey),
+		},
+		"x5c array exceeds maximum certificate count": {
+			data: cborMap(
+				item{
+					cborText("x5c"),
+					[]byte{0x89}, // CBOR array(9)
+				},
+			),
+			wantErr: expectError(fmt.Sprintf(`x5c array too large (key "x5c"): got %d, max %d`, 9, 8)),
+		},
+		"duplicate receipt key": {
+			data: cborMap(
+				item{cborText("receipt"), cborBytes([]byte("a"))},
+				item{cborText("receipt"), cborBytes([]byte("b"))},
+			),
+			wantErr: expectError(attest.ErrDuplicateKey),
+		},
+		"duplicate x5c key": {
+			data: cborMap(
+				item{cborText("x5c"), []byte{0x80}},
+				item{cborText("x5c"), []byte{0x80}},
+			),
+			wantErr: expectError(attest.ErrDuplicateKey),
+		},
+		"missing receipt": {
+			data:    cborMap(item{cborText("x5c"), []byte{0x80}}),
+			wantErr: expectError(attest.ErrMissingKey),
+		},
+		"missing x5c": {
+			data:    cborMap(item{cborText("receipt"), cborBytes([]byte("r"))}),
+			wantErr: expectError(attest.ErrMissingKey),
+		},
+		"empty map": {
+			data:    []byte{0xA0},
+			wantErr: expectError(attest.ErrMissingKey),
+		},
 	}
-	if errors.Is(err, target) {
-		return true
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			dec := cbor.NewDecoder(tt.data)
+			as := &attest.AttStmt{}
+			err := as.UnmarshalCBOR(dec)
+			if !assertErr(t, err, tt.wantErr) {
+				return
+			}
+
+			if diff := cmp.Diff(tt.want, as); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
-	return strings.Contains(err.Error(), target.Error())
 }
 
-const AttestationObjectB64 = "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"
+func BenchmarkAttestationObject_UnmarshalCBOR(b *testing.B) {
+	chain := newTestChain(b)
 
-func TestAttestationObject_UnmarshalCBOR_Op(t *testing.T) {
-	data := testutils.DecodeB64(AttestationObjectB64)
-	var ao attest.AttestationObject
-	if err := ao.UnmarshalCBOR(data); err != nil {
-		t.Fatalf("UnmarshalCBOR failed: %v", err)
-	}
+	const appID = "1234567890.com.example.myapp"
+	rpIDHash := sha2(appID)
 
-	if ao.Format != "apple-appattest" {
-		t.Errorf("Fmt mismatch: got %q, want %q", ao.Format, "apple-appattest")
-	}
-	wantAuthData := testutils.DecodeB64("RWUS6n4mlHark+G3lxaFWS/3P4lKwOwv1UgIoIv7bI9AAAAAAGFwcGF0dGVzdGRldmVsb3AAIGJmyTuMeZxB1L53Kfc3VrlWYzQRDICZ93HUk6AF0HtzpQECAyYgASFYIIjANKGQqn28WgYVAcZUKAOUJYIZiz8cxUZzyjua0gtBIlggUoJnpU9f26BGn6+0a7aZCjlr8E+UpJ1DIMgcerJAo5g=")
-	if !reflect.DeepEqual(wantAuthData, ao.AuthData) {
-		t.Error("AttestationObject.AuthData unmatched")
-	}
-	wantReceipt := testutils.DecodeB64("MIAGCSqGSIb3DQEHAqCAMIACAQExDzANBglghkgBZQMEAgEFADCABgkqhkiG9w0BBwGggCSABIID6DGCBDMwOQIBAgIBAQQxNk1VUkw4VEE1Ny5kZS52aW5jZW50LWhhdXBlcnQuYXBwbGUtYXBwYXR0ZXN0LXBvYzCCAwMCAQMCAQEEggL5MIIC9TCCAnugAwIBAgIGAXcvKfdIMAoGCCqGSM49BAMCME8xIzAhBgNVBAMMGkFwcGxlIEFwcCBBdHRlc3RhdGlvbiBDQSAxMRMwEQYDVQQKDApBcHBsZSBJbmMuMRMwEQYDVQQIDApDYWxpZm9ybmlhMB4XDTIxMDEyMjEyMTMzNVoXDTIxMDEyNTEyMTMzNVowgZExSTBHBgNVBAMMQDYyNjZjOTNiOGM3OTljNDFkNGJlNzcyOWY3Mzc1NmI5NTY2MzM0MTEwYzgwOTlmNzcxZDQ5M2EwMDVkMDdiNzMxGjAYBgNVBAsMEUFBQSBDZXJ0aWZpY2F0aW9uMRMwEQYDVQQKDApBcHBsZSBJbmMuMRMwEQYDVQQIDApDYWxpZm9ybmlhMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEiMA0oZCqfbxaBhUBxlQoA5QlghmLPxzFRnPKO5rSC0FSgmelT1/boEafr7RrtpkKOWvwT5SknUMgyBx6skCjmKOB/zCB/DAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIE8DCBiwYJKoZIhvdjZAgFBH4wfKQDAgEKv4kwAwIBAb+JMQMCAQC/iTIDAgEAv4kzAwIBAb+JNDMEMTZNVVJMOFRBNTcuZGUudmluY2VudC1oYXVwZXJ0LmFwcGxlLWFwcGF0dGVzdC1wb2OlBgQEIHNrc7+JNgMCAQW/iTcDAgEAv4k5AwIBAL+JOgMCAQAwGQYJKoZIhvdjZAgHBAwwCr+KeAYEBDE0LjQwMwYJKoZIhvdjZAgCBCYwJKEiBCCYmj0lGKF8JZzvVRTUXObN0jUfY9igKQGXJEJHnsJEPjAKBggqhkjOPQQDAgNoADBlAjBoE6V6EzgIYe1yeFf1u3Va6HaIm2VUC0Nvs+Hdw9HE55amHu7HudFf6wTORUgRDMACMQDdOMMT5XpS/kMrhUd6pPGWeArGUxxcs0pRPGtCneM72J0vPrWiKBA/RsK1Ivek5oAwKAIBBAIBAQQgi+ZcylFa0JfJU5Z9GNY12G3XihQu09B3UmvtEca+xnswYAIBBQIBAQRYYVA1UzlVZnkwOTJjS2xhUllra3VUdlFBVHgvUjNCOVN3cUhyNks2RlhhQVdzenJUKzJ4a0FnS01FZmwyNlBYWnBuVllhWXozckppM2RJQXFFWmV1YlE9PTAOAgEGAgEBBAZBVFRFU1QwDwIBBwIETwEBBAdzYW5kYm94MCACAQwCAQEEGDIwMjEtMDEtMjNUMTI6MTM6MzUuODAxWjAgAgEVAgEBBBgyMDIxLTA0LTIzVDEyOjEzOjM1LjgwMVoAAAAAAACggDCCA60wggNUoAMCAQICEFkzVq3lWYLPREI3rN9FG1MwCgYIKoZIzj0EAwIwfDEwMC4GA1UEAwwnQXBwbGUgQXBwbGljYXRpb24gSW50ZWdyYXRpb24gQ0EgNSAtIEcxMSYwJAYDVQQLDB1BcHBsZSBDZXJ0aWZpY2F0aW9uIEF1dGhvcml0eTETMBEGA1UECgwKQXBwbGUgSW5jLjELMAkGA1UEBhMCVVMwHhcNMjAwNTE5MTc0NzMxWhcNMjEwNjE4MTc0NzMxWjBaMTYwNAYDVQQDDC1BcHBsaWNhdGlvbiBBdHRlc3RhdGlvbiBGcmF1ZCBSZWNlaXB0IFNpZ25pbmcxEzARBgNVBAoMCkFwcGxlIEluYy4xCzAJBgNVBAYTAlVTMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEf+kVNGzDinuYPJPR0ENf2KvaVnAE0yxYhmVRlXq0ePfLKvi6Rff6eOrGLEnk+c3AhLUDFPECM9qbdvpEKiu4cqOCAdgwggHUMAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgwFoAU2Rf+S2eQOEuS9NvO1VeAFAuPPckwQwYIKwYBBQUHAQEENzA1MDMGCCsGAQUFBzABhidodHRwOi8vb2NzcC5hcHBsZS5jb20vb2NzcDAzLWFhaWNhNWcxMDEwggEcBgNVHSAEggETMIIBDzCCAQsGCSqGSIb3Y2QFATCB/TCBwwYIKwYBBQUHAgIwgbYMgbNSZWxpYW5jZSBvbiB0aGlzIGNlcnRpZmljYXRlIGJ5IGFueSBwYXJ0eSBhc3N1bWVzIGFjY2VwdGFuY2Ugb2YgdGhlIHRoZW4gYXBwbGljYWJsZSBzdGFuZGFyZCB0ZXJtcyBhbmQgY29uZGl0aW9ucyBvZiB1c2UsIGNlcnRpZmljYXRlIHBvbGljeSBhbmQgY2VydGlmaWNhdGlvbiBwcmFjdGljZSBzdGF0ZW1lbnRzLjA1BggrBgEFBQcCARYpaHR0cDovL3d3dy5hcHBsZS5jb20vY2VydGlmaWNhdGVhdXRob3JpdHkwHQYDVR0OBBYEFGkexw9H7OON3XU3RPPp4VpsEFYlMA4GA1UdDwEB/wQEAwIHgDAPBgkqhkiG92NkDA8EAgUAMAoGCCqGSM49BAMCA0cAMEQCICUYFlxeKZxZ9oU5rV3bmfY3PvYOzQhFqf13GtYkLSwiAiBdKpsqX6ujY4FljRhA969IC9droZTYNCCH9NaTW7UbrjCCAvkwggJ/oAMCAQICEFb7g9Qr/43DN5kjtVqubr0wCgYIKoZIzj0EAwMwZzEbMBkGA1UEAwwSQXBwbGUgUm9vdCBDQSAtIEczMSYwJAYDVQQLDB1BcHBsZSBDZXJ0aWZpY2F0aW9uIEF1dGhvcml0eTETMBEGA1UECgwKQXBwbGUgSW5jLjELMAkGA1UEBhMCVVMwHhcNMTkwMzIyMTc1MzMzWhcNMzQwMzIyMDAwMDAwWjB8MTAwLgYDVQQDDCdBcHBsZSBBcHBsaWNhdGlvbiBJbnRlZ3JhdGlvbiBDQSA1IC0gRzExJjAkBgNVBAsMHUFwcGxlIENlcnRpZmljYXRpb24gQXV0aG9yaXR5MRMwEQYDVQQKDApBcHBsZSBJbmMuMQswCQYDVQQGEwJVUzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABJLOY719hrGrKAo7HOGv+wSUgJGs9jHfpssoNW9ES+Eh5VfdEo2NuoJ8lb5J+r4zyq7NBBnxL0Ml+vS+s8uDfrqjgfcwgfQwDwYDVR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAWgBS7sN6hWDOImqSKmd6+veuv2sskqzBGBggrBgEFBQcBAQQ6MDgwNgYIKwYBBQUHMAGGKmh0dHA6Ly9vY3NwLmFwcGxlLmNvbS9vY3NwMDMtYXBwbGVyb290Y2FnMzA3BgNVHR8EMDAuMCygKqAohiZodHRwOi8vY3JsLmFwcGxlLmNvbS9hcHBsZXJvb3RjYWczLmNybDAdBgNVHQ4EFgQU2Rf+S2eQOEuS9NvO1VeAFAuPPckwDgYDVR0PAQH/BAQDAgEGMBAGCiqGSIb3Y2QGAgMEAgUAMAoGCCqGSM49BAMDA2gAMGUCMQCNb6afoeDk7FtOc4qSfz14U5iP9NofWB7DdUr+OKhMKoMaGqoNpmRt4bmT6NFVTO0CMGc7LLTh6DcHd8vV7HaoGjpVOz81asjF5pKw4WG+gElp5F8rqWzhEQKqzGHZOLdzSjCCAkMwggHJoAMCAQICCC3F/IjSxUuVMAoGCCqGSM49BAMDMGcxGzAZBgNVBAMMEkFwcGxlIFJvb3QgQ0EgLSBHMzEmMCQGA1UECwwdQXBwbGUgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkxEzARBgNVBAoMCkFwcGxlIEluYy4xCzAJBgNVBAYTAlVTMB4XDTE0MDQzMDE4MTkwNloXDTM5MDQzMDE4MTkwNlowZzEbMBkGA1UEAwwSQXBwbGUgUm9vdCBDQSAtIEczMSYwJAYDVQQLDB1BcHBsZSBDZXJ0aWZpY2F0aW9uIEF1dGhvcml0eTETMBEGA1UECgwKQXBwbGUgSW5jLjELMAkGA1UEBhMCVVMwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAASY6S89QHKk7ZMicoETHN0QlfHFo05x3BQW2Q7lpgUqd2R7X04407scRLV/9R+2MmJdyemEW08wTxFaAP1YWAyl9Q8sTQdHE3Xal5eXbzFc7SudeyA72LlU2V6ZpDpRCjGjQjBAMB0GA1UdDgQWBBS7sN6hWDOImqSKmd6+veuv2sskqzAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAKBggqhkjOPQQDAwNoADBlAjEAg+nBxBZeGl00GNnt7/RsDgBGS7jfskYRxQ/95nqMoaZrzsID1Jz1k8Z0uGrfqiMVAjBtZooQytQN1E/NjUM+tIpjpTNu423aF7dkH8hTJvmIYnQ5Cxdby1GoDOgYA+eisigAADGB/DCB+QIBATCBkDB8MTAwLgYDVQQDDCdBcHBsZSBBcHBsaWNhdGlvbiBJbnRlZ3JhdGlvbiBDQSA1IC0gRzExJjAkBgNVBAsMHUFwcGxlIENlcnRpZmljYXRpb24gQXV0aG9yaXR5MRMwEQYDVQQKDApBcHBsZSBJbmMuMQswCQYDVQQGEwJVUwIQWTNWreVZgs9EQjes30UbUzANBglghkgBZQMEAgEFADAKBggqhkjOPQQDAgRGMEQCIFXXi1ahOGlt6CLzI9B1EAG2KdHH+DLXpXsAbsUk+rMoAiABgCYkuhrsA+5Cbz82KVUdr1nQqeQg/II99lSWhbzitAAAAAAAAA==")
-	if !reflect.DeepEqual(wantReceipt, ao.AttStmt.Receipt) {
-		t.Error("AttestationObject.AttStatement.Receipt unmatched")
-	}
-	wantX5C := [][]byte{
-		testutils.DecodeB64("MIIC9TCCAnugAwIBAgIGAXcvKfdIMAoGCCqGSM49BAMCME8xIzAhBgNVBAMMGkFwcGxlIEFwcCBBdHRlc3RhdGlvbiBDQSAxMRMwEQYDVQQKDApBcHBsZSBJbmMuMRMwEQYDVQQIDApDYWxpZm9ybmlhMB4XDTIxMDEyMjEyMTMzNVoXDTIxMDEyNTEyMTMzNVowgZExSTBHBgNVBAMMQDYyNjZjOTNiOGM3OTljNDFkNGJlNzcyOWY3Mzc1NmI5NTY2MzM0MTEwYzgwOTlmNzcxZDQ5M2EwMDVkMDdiNzMxGjAYBgNVBAsMEUFBQSBDZXJ0aWZpY2F0aW9uMRMwEQYDVQQKDApBcHBsZSBJbmMuMRMwEQYDVQQIDApDYWxpZm9ybmlhMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEiMA0oZCqfbxaBhUBxlQoA5QlghmLPxzFRnPKO5rSC0FSgmelT1/boEafr7RrtpkKOWvwT5SknUMgyBx6skCjmKOB/zCB/DAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIE8DCBiwYJKoZIhvdjZAgFBH4wfKQDAgEKv4kwAwIBAb+JMQMCAQC/iTIDAgEAv4kzAwIBAb+JNDMEMTZNVVJMOFRBNTcuZGUudmluY2VudC1oYXVwZXJ0LmFwcGxlLWFwcGF0dGVzdC1wb2OlBgQEIHNrc7+JNgMCAQW/iTcDAgEAv4k5AwIBAL+JOgMCAQAwGQYJKoZIhvdjZAgHBAwwCr+KeAYEBDE0LjQwMwYJKoZIhvdjZAgCBCYwJKEiBCCYmj0lGKF8JZzvVRTUXObN0jUfY9igKQGXJEJHnsJEPjAKBggqhkjOPQQDAgNoADBlAjBoE6V6EzgIYe1yeFf1u3Va6HaIm2VUC0Nvs+Hdw9HE55amHu7HudFf6wTORUgRDMACMQDdOMMT5XpS/kMrhUd6pPGWeArGUxxcs0pRPGtCneM72J0vPrWiKBA/RsK1Ivek5oA="),
-		testutils.DecodeB64("MIICQzCCAcigAwIBAgIQCbrF4bxAGtnUU5W8OBoIVDAKBggqhkjOPQQDAzBSMSYwJAYDVQQDDB1BcHBsZSBBcHAgQXR0ZXN0YXRpb24gUm9vdCBDQTETMBEGA1UECgwKQXBwbGUgSW5jLjETMBEGA1UECAwKQ2FsaWZvcm5pYTAeFw0yMDAzMTgxODM5NTVaFw0zMDAzMTMwMDAwMDBaME8xIzAhBgNVBAMMGkFwcGxlIEFwcCBBdHRlc3RhdGlvbiBDQSAxMRMwEQYDVQQKDApBcHBsZSBJbmMuMRMwEQYDVQQIDApDYWxpZm9ybmlhMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAErls3oHdNebI1j0Dn0fImJvHCX+8XgC3qs4JqWYdP+NKtFSV4mqJmBBkSSLY8uWcGnpjTY71eNw+/oI4ynoBzqYXndG6jWaL2bynbMq9FXiEWWNVnr54mfrJhTcIaZs6Zo2YwZDASBgNVHRMBAf8ECDAGAQH/AgEAMB8GA1UdIwQYMBaAFKyREFMzvb5oQf+nDKnl+url5YqhMB0GA1UdDgQWBBQ+410cBBmpybQx+IR01uHhV3LjmzAOBgNVHQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwMDaQAwZgIxALu+iI1zjQUCz7z9Zm0JV1A1vNaHLD+EMEkmKe3R+RToeZkcmui1rvjTqFQz97YNBgIxAKs47dDMge0ApFLDukT5k2NlU/7MKX8utN+fXr5aSsq2mVxLgg35BDhveAe7WJQ5tw=="),
-	}
-	if !reflect.DeepEqual(wantX5C, ao.AttStmt.X5C) {
-		t.Error("AttestationObject.AttStatement.X5C unmatched")
-	}
-}
+	challenge := []byte("example_server_challenge")
+	clientDataHash := sha256.Sum256(challenge)
 
-func BenchmarkAttestationObject_UnmarshalCBOR_Op(b *testing.B) {
-	data := testutils.DecodeB64(AttestationObjectB64)
+	pubBytes, err := chain.credKey.PublicKey.Bytes()
+	if err != nil {
+		b.Fatal(err)
+	}
+	keyID := sha256.Sum256(pubBytes)
+	credentialID := keyID[:]
 
+	authData := merge(
+		rpIDHash,
+		[]byte{0x40},
+		[]byte{0x00, 0x00, 0x00, 0x00},
+		[]byte("appattest\x00\x00\x00\x00\x00\x00\x00"),
+		binary.BigEndian.AppendUint16(nil, uint16(len(credentialID))),
+		credentialID,
+		cborMap( // COSE Key
+			item{cborUint(1), cborUint(2)},
+			item{cborUint(3), cborNegInt(-7)},
+			item{cborNegInt(-1), cborUint(1)},
+			item{cborNegInt(-2), cborBytes(chain.credKey.PublicKey.X.FillBytes(make([]byte, 32)))},
+			item{cborNegInt(-3), cborBytes(chain.credKey.PublicKey.Y.FillBytes(make([]byte, 32)))},
+		),
+		cborMap( // Extensions
+			item{cborText("apple_bundle_version_01"), cborText("1.0")},
+			item{cborText("apple_validation_category_01"), []byte{0x44, 0x01, 0x00, 0x00, 0x00}},
+		),
+	)
+
+	credCertDER := chain.buildCredCert(b, authData, clientDataHash[:])
+
+	data := cborMap(
+		item{cborText("fmt"), cborText("apple-appattest")},
+		item{cborText("authData"), cborBytes(authData)},
+		item{cborText("attStmt"), cborMap(
+			item{cborText("x5c"), merge(
+				[]byte{0x80 | 2}, // CBOR array header: major type 4 (array), 2 items
+				cborBytes(credCertDER),
+				cborBytes(chain.rootDER),
+			)},
+			item{cborText("receipt"), cborBytes([]byte("dummy-receipt-bytes"))},
+		)},
+	)
+
+	b.ReportAllocs()
 	b.ResetTimer()
-
-	for i := 0; b.Loop(); i++ {
+	for b.Loop() {
 		var ao attest.AttestationObject
 		if err := ao.UnmarshalCBOR(data); err != nil {
 			b.Fatal(err)

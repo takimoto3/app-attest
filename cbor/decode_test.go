@@ -24,9 +24,9 @@ func TestDecoder_ReadAdditional(t *testing.T) {
 		"uint32":         {[]byte{0x00, 0x01, 0x00, 0x00}, 26, 65536, 4, nil},
 		"uint64":         {[]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}, 27, 1, 8, nil},
 		"uint8 EOF":      {[]byte{}, 24, 0, 0, io.ErrUnexpectedEOF},
-		"uint16 EOF":     {[]byte{0x01}, 25, 0, 0, ErrTooLarge},
-		"uint32 EOF":     {[]byte{0x01, 0x02, 0x03}, 26, 0, 0, ErrTooLarge},
-		"uint64 EOF":     {[]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}, 27, 0, 0, ErrTooLarge},
+		"uint16 EOF":     {[]byte{0x01}, 25, 0, 0, io.ErrUnexpectedEOF},
+		"uint32 EOF":     {[]byte{0x01, 0x02, 0x03}, 26, 0, 0, io.ErrUnexpectedEOF},
+		"uint64 EOF":     {[]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}, 27, 0, 0, io.ErrUnexpectedEOF},
 		"unsupported 28": {[]byte{}, 28, 0, 0, ErrUnsupportedAdditionalInfo},
 		"unsupported 29": {[]byte{}, 29, 0, 0, ErrUnsupportedAdditionalInfo},
 		"unsupported 30": {[]byte{}, 30, 0, 0, ErrUnsupportedAdditionalInfo},
@@ -66,6 +66,24 @@ func TestDecodeInt(t *testing.T) {
 		"neg 300":        {[]byte{0x39, 0x01, 0x2c}, -301, nil}, // -301
 		"uint max int64": {[]byte{0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, math.MaxInt64, nil},
 		"uint overflow":  {[]byte{0x1b, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 0, ErrIntegerOverflow},
+		"neg min int64": {
+			[]byte{
+				0x3b,
+				0x7f, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff,
+			},
+			math.MinInt64,
+			nil,
+		},
+		"neg overflow": {
+			[]byte{
+				0x3b,
+				0x80, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+			},
+			0,
+			ErrIntegerOverflow,
+		},
 	}
 
 	for name, tt := range tests {
@@ -76,7 +94,7 @@ func TestDecodeInt(t *testing.T) {
 				t.Fatalf("ReadHeader error: %v", err)
 			}
 			val, err := dec.ReadInt(mt, ai)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("readInt error: %v", err)
 			}
 
@@ -84,6 +102,31 @@ func TestDecodeInt(t *testing.T) {
 				t.Errorf("got %d, want %d", val, tt.want)
 			}
 		})
+	}
+}
+
+func TestDecoder_ReadByteStringUnexpectedEOF(t *testing.T) {
+	// The length is consumed, but the payload is incomplete.
+	data := []byte{0x58, 0x03, 0x01}
+	dec := NewDecoder(data)
+
+	_, ai, err := dec.ReadHeader()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = dec.ReadByteString(ai)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("ReadByteString() error = %v, want %v",
+			err, io.ErrUnexpectedEOF)
+	}
+
+	if got, want := dec.pos, 2; got != want {
+		t.Errorf("pos = %d, want %d", got, want)
+	}
+
+	if got, want := dec.Len(), 1; got != want {
+		t.Errorf("Len() = %d, want %d", got, want)
 	}
 }
 
@@ -124,9 +167,12 @@ func TestDecodeTextString(t *testing.T) {
 		want    string
 		wantErr error
 	}{
-		"short text":    {[]byte{0x63, 'f', 'o', 'o'}, "foo", nil},                   // 0x63 → len=3
-		"1 byte len":    {[]byte{0x78, 0x05, 'h', 'e', 'l', 'l', 'o'}, "hello", nil}, // ai=24, 1 byte length
-		"invalid UTF-8": {[]byte{0x62, 0xff, 0xfe}, "", ErrInvalidString},
+		"short text":                   {[]byte{0x63, 'f', 'o', 'o'}, "foo", nil},                   // 0x63 → len=3
+		"1 byte len":                   {[]byte{0x78, 0x05, 'h', 'e', 'l', 'l', 'o'}, "hello", nil}, // ai=24, 1 byte length
+		"invalid UTF-8":                {[]byte{0x62, 0xff, 0xfe}, "", ErrInvalidString},
+		"overlong encoding":            {[]byte{0x62, 0xc0, 0xaf}, "", ErrInvalidString},
+		"invalid continuation byte":    {[]byte{0x63, 0xe2, 0x28, 0xa1}, "", ErrInvalidString},
+		"truncated multibyte sequence": {[]byte{0x62, 0xe2, 0x82}, "", ErrInvalidString},
 	}
 
 	for name, tt := range tests {
@@ -137,7 +183,7 @@ func TestDecodeTextString(t *testing.T) {
 				t.Fatalf("ReadHeader error: %v", err)
 			}
 			got, err := dec.ReadTextString(ai)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("DecodeTextString error: %v", err)
 			}
 			if got != tt.want {
@@ -167,7 +213,7 @@ func TestDecodeUnsafeTextString(t *testing.T) {
 			}
 
 			got, err := dec.ReadUnsafeTextString(ai)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("ReadUnsafeTextString error: %v", err)
 			}
 
@@ -236,89 +282,110 @@ var benchByteStringHexLong = "581004112233445566778899aabbccddeeff"
 var benchTextData = []byte{0x63, 'f', 'o', 'o'}
 var benchTextDataLong = []byte{0x78, 0x0b, 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}
 
+var (
+	sinkInt   int64
+	sinkBytes []byte
+	sinkStr   string
+)
+
 func BenchmarkDecodeIntSmall(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchIntSmall)
 		mt, ai, _ := dec.ReadHeader()
-		_, _ = dec.ReadInt(mt, ai)
+		sinkInt, _ = dec.ReadInt(mt, ai)
 	}
 }
 
 func BenchmarkDecodeIntAdd24(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchIntAdd24)
 		mt, ai, _ := dec.ReadHeader()
-		_, _ = dec.ReadInt(mt, ai)
+		sinkInt, _ = dec.ReadInt(mt, ai)
 	}
 }
 
 func BenchmarkDecodeIntAdd25(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchIntAdd25)
 		mt, ai, _ := dec.ReadHeader()
-		_, _ = dec.ReadInt(mt, ai)
+		sinkInt, _ = dec.ReadInt(mt, ai)
 	}
 }
 func BenchmarkDecodeByteString(b *testing.B) {
-	data, _ := hex.DecodeString(benchByteStringHex)
-	for i := 0; b.Loop(); i++ {
+	data, err := hex.DecodeString(benchByteStringHex)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
 		dec := NewDecoder(data)
 		mt, ai, _ := dec.ReadHeader()
 		if mt != ByteString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		_, _ = dec.ReadByteString(ai)
+		sinkBytes, _ = dec.ReadByteString(ai)
 	}
 }
 
 func BenchmarkDecodeByteStringLong(b *testing.B) {
-	data, _ := hex.DecodeString(benchByteStringHexLong)
-	for i := 0; b.Loop(); i++ {
+	data, err := hex.DecodeString(benchByteStringHexLong)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
 		dec := NewDecoder(data)
 		mt, ai, _ := dec.ReadHeader()
 		if mt != ByteString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		_, _ = dec.ReadByteString(ai)
+		sinkBytes, _ = dec.ReadByteString(ai)
 	}
 }
 
-var sink string
-
 func BenchmarkDecodeTextString(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchTextData)
 		mt, ai, _ := dec.ReadHeader()
 		if mt != TextString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		sink, _ = dec.ReadTextString(ai)
+		sinkStr, _ = dec.ReadTextString(ai)
 	}
 }
 
 func BenchmarkDecodeTextStringLong(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchTextDataLong)
 		mt, ai, _ := dec.ReadHeader()
 		if mt != TextString {
 			b.Fatalf("unexpected major type: %d", mt)
 		}
-		sink, _ = dec.ReadTextString(ai)
+		sinkStr, _ = dec.ReadTextString(ai)
 	}
 }
 
 func BenchmarkDecodeUnsafeTextString(b *testing.B) {
-	for i := 0; b.Loop(); i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		dec := NewDecoder(benchTextData)
 		_, ai, _ := dec.ReadHeader()
-		sink, _ = dec.ReadUnsafeTextString(ai)
+		sinkStr, _ = dec.ReadUnsafeTextString(ai)
 	}
 }
 
 func BenchmarkDecodeUnsafeTextStringLong(b *testing.B) {
+	b.ReportAllocs()
 	for i := 0; b.Loop(); i++ {
 		dec := NewDecoder(benchTextDataLong)
 		_, ai, _ := dec.ReadHeader()
-		sink, _ = dec.ReadUnsafeTextString(ai)
+		sinkStr, _ = dec.ReadUnsafeTextString(ai)
 	}
 }

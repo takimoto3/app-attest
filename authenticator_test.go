@@ -1,6 +1,7 @@
 package attest_test
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,7 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"strings"
+	"math/big"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -16,7 +17,12 @@ import (
 	"github.com/takimoto3/app-attest/cbor"
 )
 
-func TestAuthenticatorData_WithAppleGuideData(t *testing.T) {
+// TestAuthenticatorData_Unmarshal_AppleGuideExtensions verifies that
+// Unmarshal correctly decodes the iOS 27+ extensions
+// (apple_bundle_version_01 / apple_validation_category_01) from real
+// Apple-signed authData, using parseAppleGuide to decode it via the
+// package's own CBOR path (AttestationObject.UnmarshalCBOR).
+func TestAuthenticatorData_Unmarshal_AppleGuideExtensions(t *testing.T) {
 	rpIDHash := sha256.Sum256([]byte("1234567890.com.example.myapp"))
 	want := attest.AuthenticatorData{
 		RPIDHash: rpIDHash[:],
@@ -51,9 +57,9 @@ func TestAuthenticatorData_WithAppleGuideData(t *testing.T) {
 		AppleBundleVersion:      "1",
 		AppleValidationCategory: 1,
 	}
-	data := getAuthDataFromAppleGuide(t)
+	attestObj := parseAppleGuide(t)
 	authData := attest.AuthenticatorData{}
-	if err := authData.Unmarshal(data); err != nil {
+	if err := authData.Unmarshal(attestObj.AuthData, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -62,35 +68,38 @@ func TestAuthenticatorData_WithAppleGuideData(t *testing.T) {
 	}
 }
 
-func TestAuthenticatorData_HasAttestedCredentialData(t *testing.T) {
-	tests := map[string]struct {
-		target *attest.AuthenticatorData
-		want   bool
-	}{
-		"true case":  {&attest.AuthenticatorData{Flags: 0x40}, true},
-		"false case": {&attest.AuthenticatorData{Flags: 0x10}, false},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			if got := tt.target.HasAttestedCredentialData(); tt.want != got {
-				t.Errorf("HasAttestedCredentialData() invalid result want %v got:%v", tt.want, got)
-			}
-		})
-	}
-}
-
 func TestCoseKey_Unmarshal(t *testing.T) {
-	publicKey := generatePublicKey(t)
+	x, ok := new(big.Int).SetString("7edc0361ca4374f1969d8258f59f5df858d2f5c16a4d3329a6c79798455981b4", 16)
+	if !ok {
+		t.Fatal("invalid X hex")
+	}
+	y, ok := new(big.Int).SetString("16faa25765c3ffb95fc545cdd05c75361253f0d2456227f341da652721bf05e3", 16)
+	if !ok {
+		t.Fatal("invalid Y hex")
+	}
+	publicKey := &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
+	if _, err := publicKey.ECDH(); err != nil {
+		t.Fatalf("fixed key is not a valid P-256 point: %v", err)
+	}
 
 	tests := map[string]struct {
 		data    []byte
 		wantKey *ecdsa.PublicKey
-		wantErr error
+		wantErr *wantError
 	}{
+		"valid cose key": {
+			data: cborMap( // Cose Key
+				item{cborUint(1), cborUint(2)},                       // ktv: EC2
+				item{cborUint(3), cborNegInt(-7)},                    // alg: ES256
+				item{cborNegInt(-1), cborUint(1)},                    // crv: P-256
+				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())}, // X
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
+			),
+			wantKey: publicKey,
+		},
 		"empty bytes": {
 			data:    []byte{},
-			wantErr: fmt.Errorf("failed to read CBOR map header: %w", io.ErrUnexpectedEOF)},
+			wantErr: expectError("failed to read CBOR map header", io.ErrUnexpectedEOF)},
 		"map key not integer": {
 			data: cborMap( // Cose Key
 				item{cborText("1"), cborUint(2)},                     // ktv: EC2
@@ -99,7 +108,8 @@ func TestCoseKey_Unmarshal(t *testing.T) {
 				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())}, // X
 				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
 			),
-			wantErr: fmt.Errorf("expected integer map key at index %d, got major type %d", 0, cbor.TextString)},
+			wantErr: expectError(fmt.Sprintf("expected integer map key at index %d, got major type %d", 0, cbor.TextString)),
+		},
 		"invalid key": {
 			data: cborMap( // Cose Key
 				item{cborUint(9), cborUint(2)},                       // ktv: EC2
@@ -108,13 +118,14 @@ func TestCoseKey_Unmarshal(t *testing.T) {
 				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())}, // X
 				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
 			),
-			wantErr: fmt.Errorf("%w: %d", attest.ErrUnknownKey, 9)},
+			wantErr: expectError("unknown key: 9", attest.ErrUnknownKey),
+		},
 		"truncated map": {
 			data: []byte{
 				0xa5, // map(5) — but only 1 entry follows
 				0x01, 0x02,
 			},
-			wantErr: fmt.Errorf("failed to read map key header at index 1"),
+			wantErr: expectError("failed to read map key header at index 1", io.ErrUnexpectedEOF),
 		},
 		"wrong type for byte string value": {
 			data: cborMap(
@@ -124,17 +135,119 @@ func TestCoseKey_Unmarshal(t *testing.T) {
 				item{cborNegInt(-2), cborUint(123)}, // X should be bytes, not uint
 				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
 			),
-			wantErr: fmt.Errorf("expected ByteString for X coordinate"),
+			wantErr: expectError("expected ByteString for X coordinate"),
 		},
-		"valid cose key": {
-			data: cborMap( // Cose Key
-				item{cborUint(1), cborUint(2)},                       // ktv: EC2
-				item{cborUint(3), cborNegInt(-7)},                    // alg: ES256
-				item{cborNegInt(-1), cborUint(1)},                    // crv: P-256
-				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())}, // X
-				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
+		"wrong type for Kty": {
+			data: cborMap(
+				item{cborUint(1), cborText("2")}, // Kty should be int, not text
+				item{cborUint(3), cborNegInt(-7)},
+				item{cborNegInt(-1), cborUint(1)},
+				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())},
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
 			),
-			wantKey: publicKey},
+			wantErr: expectError("expected integer for Kty"),
+		},
+		"wrong type for Alg": {
+			data: cborMap(
+				item{cborUint(1), cborUint(2)},
+				item{cborUint(3), cborText("-7")}, // Alg should be int, not text
+				item{cborNegInt(-1), cborUint(1)},
+				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())},
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
+			),
+			wantErr: expectError("expected integer for Alg"),
+		},
+		"wrong type for Crv": {
+			data: cborMap(
+				item{cborUint(1), cborUint(2)},
+				item{cborUint(3), cborNegInt(-7)},
+				item{cborNegInt(-1), cborText("1")}, // Crv should be int, not text
+				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())},
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
+			),
+			wantErr: expectError("expected integer for Crv"),
+		},
+		"wrong type for Y": {
+			data: cborMap(
+				item{cborUint(1), cborUint(2)},
+				item{cborUint(3), cborNegInt(-7)},
+				item{cborNegInt(-1), cborUint(1)},
+				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())},
+				item{cborNegInt(-3), cborUint(123)}, // Y should be bytes, not uint
+			),
+			wantErr: expectError("expected ByteString for Y coordinate"),
+		},
+		"truncated after Kty key": {
+			data: []byte{
+				0xa1, // map(1)
+				0x01, // key 1 (Kty), but no value follows
+			},
+			wantErr: expectError("failed to read Kty header", io.ErrUnexpectedEOF),
+		},
+		"X byte string length exceeds data": {
+			data: []byte{
+				0xa1,       // map(1)
+				0x21,       // key -2 (X)
+				0x58, 0x20, // byte string, 32 bytes declared
+				0x01, 0x02, // only 2 bytes follow
+			},
+			wantErr: expectError("failed to read X coordinate bytes", io.ErrUnexpectedEOF),
+		},
+		"missing key: x": {
+			data: cborMap(
+				item{cborUint(1), cborUint(2)},
+				item{cborUint(3), cborNegInt(-7)},
+				item{cborNegInt(-1), cborUint(1)},
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
+			),
+			wantErr: expectError("x(-2)", attest.ErrMissingKey),
+		},
+		"empty map": {
+			data:    []byte{0xa0},
+			wantErr: expectError("kty(1), alg(3), crv(-1), x(-2), y(-3)", attest.ErrMissingKey),
+		},
+		"duplicate key: kty": {
+			data: cborMap(
+				item{cborUint(1), cborUint(2)},
+				item{cborUint(1), cborUint(2)},
+			),
+			wantErr: expectError(": 1", attest.ErrDuplicateKey),
+		},
+		"duplicate key: alg": {
+			data: cborMap(
+				item{cborUint(3), cborNegInt(-7)},
+				item{cborUint(3), cborNegInt(-7)},
+			),
+			wantErr: expectError(": 3", attest.ErrDuplicateKey),
+		},
+		"duplicate key: crv": {
+			data: cborMap(
+				item{cborNegInt(-1), cborUint(1)},
+				item{cborNegInt(-1), cborUint(1)},
+			),
+			wantErr: expectError(": -1", attest.ErrDuplicateKey),
+		},
+		"duplicate key: x": {
+			data: cborMap(
+				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())},
+				item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())},
+			),
+			wantErr: expectError(": -2", attest.ErrDuplicateKey),
+		},
+		"duplicate key: y": {
+			data: cborMap(
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
+				item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
+			),
+			wantErr: expectError(": -3", attest.ErrDuplicateKey),
+		},
+		"duplicate key: different value": {
+			data: cborMap(
+				item{cborUint(1), cborUint(2)},
+				item{cborUint(1), cborUint(9)},
+			),
+			wantErr: expectError(": 1", attest.ErrDuplicateKey),
+		},
 	}
 
 	for name, tt := range tests {
@@ -142,17 +255,8 @@ func TestCoseKey_Unmarshal(t *testing.T) {
 			var coseKey attest.CoseKey
 			dec := cbor.NewDecoder(tt.data)
 			err := coseKey.UnmarshalCBOR(dec)
-			if err != nil {
-				if tt.wantErr == nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr.Error()) {
-					t.Errorf("UnmarshalCBOR() error = %q, want error containing %q", err.Error(), tt.wantErr.Error())
-				}
+			if !assertErr(t, err, tt.wantErr) {
 				return
-			}
-			if tt.wantErr != nil {
-				t.Fatalf("expected error containing %q, got nil", tt.wantErr.Error())
 			}
 
 			if tt.wantKey != nil {
@@ -175,17 +279,35 @@ func TestCoseKey_ParsePublicKey_InvalidLength(t *testing.T) {
 	tests := map[string]struct {
 		x, y []byte
 	}{
-		"short X": {x: make([]byte, 31), y: make([]byte, 32)},
-		"short Y": {x: make([]byte, 32), y: make([]byte, 31)},
-		"empty":   {x: nil, y: nil},
+		"short X":    {x: make([]byte, 31), y: make([]byte, 32)},
+		"short Y":    {x: make([]byte, 32), y: make([]byte, 31)},
+		"long X":     {x: make([]byte, 33), y: make([]byte, 32)},
+		"long Y":     {x: make([]byte, 32), y: make([]byte, 33)},
+		"both short": {x: make([]byte, 31), y: make([]byte, 31)},
+		"empty":      {x: nil, y: nil},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			k := &attest.CoseKey{X: tt.x, Y: tt.y}
 			_, err := k.ParsePublicKey()
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
+			assertErr(t, err, expectError("invalid coordinate length"))
+		})
+	}
+}
+
+func TestCoseKey_ParsePublicKey_NotOnCurve(t *testing.T) {
+	tests := map[string]struct {
+		x, y []byte
+	}{
+		"all zero": {x: make([]byte, 32), y: make([]byte, 32)},
+		"all 0xFF": {x: bytes.Repeat([]byte{0xFF}, 32), y: bytes.Repeat([]byte{0xFF}, 32)},
+		"x=1, y=1": {x: append(make([]byte, 31), 1), y: append(make([]byte, 31), 1)},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			k := &attest.CoseKey{X: tt.x, Y: tt.y}
+			_, err := k.ParsePublicKey()
+			assertErr(t, err, expectError("failed to parse uncompressed EC public key"))
 		})
 	}
 }
@@ -201,9 +323,10 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 	}
 
 	tests := map[string]struct {
-		data    []byte
-		want    *attest.AuthenticatorData
-		wantErr error
+		data        []byte
+		requireCred bool
+		want        *attest.AuthenticatorData
+		wantErr     *wantError
 	}{
 		"valid authenticator data": {
 			data: merge(
@@ -214,17 +337,18 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				binary.BigEndian.AppendUint16(nil, uint16(len(rawCredentialID))), // CredID Len
 				rawCredentialID,                                                  // CredID
 				cborMap( // Cose Key
-					item{cborUint(1), cborUint(2)},                       // ktv: EC2
-					item{cborUint(3), cborNegInt(-7)},                    // alg: ES256
-					item{cborNegInt(-1), cborUint(1)},                    // crv: P-256
-					item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())}, // X
-					item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
+					item{cborUint(1), cborUint(2)},                                           // ktv: EC2
+					item{cborUint(3), cborNegInt(-7)},                                        // alg: ES256
+					item{cborNegInt(-1), cborUint(1)},                                        // crv: P-256
+					item{cborNegInt(-2), cborBytes(publicKey.X.FillBytes(make([]byte, 32)))}, // X
+					item{cborNegInt(-3), cborBytes(publicKey.Y.FillBytes(make([]byte, 32)))}, // Y
 				),
 				cborMap( // Extensions
 					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})}, // apple_validation_category_01
 					item{cborText("apple_bundle_version_01"), cborText("1.0")},                                // apple_bundle_version_01
 				),
 			),
+			requireCred: true,
 			want: &attest.AuthenticatorData{
 				RPIDHash: sha2("1234567890.appleID"),
 				Flags:    0x40,
@@ -236,8 +360,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 						Kty: 2,
 						Alg: -7,
 						Crv: 1,
-						X:   publicKey.X.Bytes(),
-						Y:   publicKey.Y.Bytes(),
+						X:   publicKey.X.FillBytes(make([]byte, 32)),
+						Y:   publicKey.Y.FillBytes(make([]byte, 32)),
 					},
 				},
 				AppleValidationCategory: 1,
@@ -253,13 +377,14 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				binary.BigEndian.AppendUint16(nil, uint16(len(rawCredentialID))), // CredID Len
 				rawCredentialID,                                                  // CredID
 				cborMap( // Cose Key
-					item{cborUint(1), cborUint(2)},                       // ktv: EC2
-					item{cborUint(3), cborNegInt(-7)},                    // alg: ES256
-					item{cborNegInt(-1), cborUint(1)},                    // crv: P-256
-					item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())}, // X
-					item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())}, // Y
+					item{cborUint(1), cborUint(2)},                                           // ktv: EC2
+					item{cborUint(3), cborNegInt(-7)},                                        // alg: ES256
+					item{cborNegInt(-1), cborUint(1)},                                        // crv: P-256
+					item{cborNegInt(-2), cborBytes(publicKey.X.FillBytes(make([]byte, 32)))}, // X
+					item{cborNegInt(-3), cborBytes(publicKey.Y.FillBytes(make([]byte, 32)))}, // Y
 				),
 			),
+			requireCred: true,
 			want: &attest.AuthenticatorData{
 				RPIDHash: sha2("1234567890.appleID"),
 				Flags:    0x40,
@@ -271,8 +396,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 						Kty: 2,
 						Alg: -7,
 						Crv: 1,
-						X:   publicKey.X.Bytes(),
-						Y:   publicKey.Y.Bytes(),
+						X:   publicKey.X.FillBytes(make([]byte, 32)),
+						Y:   publicKey.Y.FillBytes(make([]byte, 32)),
 					},
 				},
 			},
@@ -309,7 +434,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 		},
 		"empty authenticator data": {
 			data:    []byte{},
-			wantErr: fmt.Errorf("authenticator data length too short: got 0 bytes"),
+			wantErr: expectError("authenticator data length too short: got 0 bytes"),
 		},
 		"too short overall": { // shorter than minAuthDataLen (37 bytes)
 			data: merge(
@@ -317,9 +442,9 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				[]byte{0x01},               // flag
 				[]byte{0x00, 0x00, 0x00},   // counter
 			),
-			wantErr: fmt.Errorf("authenticator data length too short: got 36 bytes"),
+			wantErr: expectError("authenticator data length too short: got 36 bytes"),
 		},
-		"flag set but no attested credential data": {
+		"AT flag set but requireCred=false: credential not parsed": {
 			data: merge(
 				sha2("1234567890.appleID"),
 				[]byte{0x40},                   // flag: attested credential present
@@ -331,6 +456,15 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				Counter:  0,
 			},
 		},
+		"requireCred=true but no attested credential data": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x40},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+			),
+			requireCred: true,
+			wantErr:     expectError("failed to read AAGUID", io.ErrUnexpectedEOF),
+		},
 		"credential ID length exceeds available data": {
 			data: merge(
 				sha2("1234567890.appleID"),
@@ -339,7 +473,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				[]byte("appattest\x00\x00\x00\x00\x00\x00\x00"),
 				[]byte{0x00, 0xFF}, // claims 255 bytes but none follow
 			),
-			wantErr: fmt.Errorf("failed to read credential ID"),
+			requireCred: true,
+			wantErr:     expectError("failed to read credential ID", io.ErrUnexpectedEOF),
 		},
 		"unknown extension key": {
 			data: merge(
@@ -350,7 +485,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 					item{cborText("unknown_key_01"), cborUint(1)},
 				),
 			),
-			wantErr: fmt.Errorf("%w: %s", attest.ErrUnknownKey, "unknown_key_01"),
+			wantErr: expectError("failed to parse extensions", attest.ErrUnknownKey),
 		},
 		"cose key parse error propagates": {
 			data: merge(
@@ -364,7 +499,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 					item{cborUint(9), cborUint(2)}, // unknown key type
 				),
 			),
-			wantErr: fmt.Errorf("%w: %d", attest.ErrUnknownKey, 9),
+			requireCred: true,
+			wantErr:     expectError("failed to parse COSE key", attest.ErrUnknownKey),
 		},
 		"extensions not a map": {
 			data: merge(
@@ -373,7 +509,7 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				[]byte{0x00, 0x00, 0x00, 0x00}, // counter
 				[]byte{0x01},                   // not a map header (unsigned int 1)
 			),
-			wantErr: fmt.Errorf("expected CBOR type Map (major type 5), got major type %d", cbor.UnsignedInt),
+			wantErr: expectError(fmt.Sprintf("expected CBOR type Map (major type 5), got major type %d", cbor.UnsignedInt)),
 		},
 		"invalid extra key type": {
 			data: merge(
@@ -395,7 +531,8 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 					item{cborText("apple_bundle_version_01"), cborText("1.0")},           // apple_bundle_version_01
 				),
 			),
-			wantErr: fmt.Errorf("expected string map key at index %d, got major type %d", 0, cbor.ByteString),
+			requireCred: true,
+			wantErr:     expectError(fmt.Sprintf("expected string map key at index %d, got major type %d", 0, cbor.ByteString)),
 		},
 		"trailing data after extensions": {
 			data: merge(
@@ -407,25 +544,202 @@ func TestAuthenticatorData_Unmarshal(t *testing.T) {
 				),
 				[]byte{0xFF}, // extra trailing byte
 			),
-			wantErr: fmt.Errorf("unexpected trailing data in authenticator data"),
+			wantErr: expectError("unexpected trailing data in authenticator data"),
+		},
+		"category length 0": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{})},
+				),
+			),
+			wantErr: expectError("invalid category length"),
+		},
+		"category length 3": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00})},
+				),
+			),
+			wantErr: expectError("invalid category length"),
+		},
+		"category length 5": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00, 0x00})},
+				),
+			),
+			wantErr: expectError("invalid category length"),
+		},
+		"category wrong type": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_validation_category_01"), cborUint(1)},
+				),
+			),
+			wantErr: expectError("expected bytestring for category"),
+		},
+		"bundle version wrong type": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_bundle_version_01"), cborUint(1)},
+				),
+			),
+			wantErr: expectError("expected string for version"),
+		},
+		"bundle version only": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_bundle_version_01"), cborText("1.0")},
+				),
+			),
+			want: &attest.AuthenticatorData{
+				RPIDHash:           sha2("1234567890.appleID"),
+				AppleBundleVersion: "1.0",
+			},
+		},
+		"extensions: empty map": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				[]byte{0xa0}, // empty map
+			),
+			want: &attest.AuthenticatorData{RPIDHash: sha2("1234567890.appleID")},
+		},
+		"extensions: map size exceeds entries": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				[]byte{0xa2}, // map(2), but only 1 entry follows
+				cborText("apple_bundle_version_01"), cborText("1.0"),
+			),
+			wantErr: expectError("failed to read map key header at index 1", io.ErrUnexpectedEOF),
+		},
+		"extensions: key string truncated": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				[]byte{0xa1, 0x78, 0x20}, // map(1), text string of 32 bytes declared
+				[]byte("ab"),             // only 2 bytes follow
+			),
+			wantErr: expectError("failed to read map key string at index 0", io.ErrUnexpectedEOF),
+		},
+		"extensions: value header missing": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				[]byte{0xa1},
+				cborText("apple_bundle_version_01"), // key only, no value
+			),
+			wantErr: expectError("failed to read map value header", io.ErrUnexpectedEOF),
+		},
+		"extensions: version string truncated": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				[]byte{0xa1},
+				cborText("apple_bundle_version_01"),
+				[]byte{0x65}, []byte("ab"), // text(5) declared, 2 bytes follow
+			),
+			wantErr: expectError("failed to read version", io.ErrUnexpectedEOF),
+		},
+		"extensions: category byte string truncated": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				[]byte{0xa1},
+				cborText("apple_validation_category_01"),
+				[]byte{0x44, 0x01, 0x02}, // bytes(4) declared, 2 bytes follow
+			),
+			wantErr: expectError("failed to read category", io.ErrUnexpectedEOF),
+		},
+		"requireCred=false but credential data present": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x40}, // AT flag on
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				[]byte("appattest\x00\x00\x00\x00\x00\x00\x00"),
+				binary.BigEndian.AppendUint16(nil, uint16(len(rawCredentialID))),
+				rawCredentialID,
+				cborMap(
+					item{cborUint(1), cborUint(2)},
+					item{cborUint(3), cborNegInt(-7)},
+					item{cborNegInt(-1), cborUint(1)},
+					item{cborNegInt(-2), cborBytes(publicKey.X.Bytes())},
+					item{cborNegInt(-3), cborBytes(publicKey.Y.Bytes())},
+				),
+			),
+			requireCred: false,
+			wantErr:     expectError("failed to parse extensions"),
+		},
+		"requireCred=true but no credential data (assertion shape)": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x05},
+				cborMap(
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})},
+					item{cborText("apple_bundle_version_01"), cborText("1.0")},
+				),
+			),
+			requireCred: true,
+			wantErr:     expectError("failed to read"),
+		},
+		"duplicate extension: bundle version": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_bundle_version_01"), cborText("1.0")},
+					item{cborText("apple_bundle_version_01"), cborText("2.0")},
+				),
+			),
+			wantErr: expectError("apple_bundle_version_01", attest.ErrDuplicateKey),
+		},
+		"duplicate extension: validation category": {
+			data: merge(
+				sha2("1234567890.appleID"),
+				[]byte{0x00},
+				[]byte{0x00, 0x00, 0x00, 0x00},
+				cborMap(
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})},
+					item{cborText("apple_validation_category_01"), cborBytes([]byte{0x01, 0x00, 0x00, 0x00})},
+				),
+			),
+			wantErr: expectError("apple_validation_category_01", attest.ErrDuplicateKey),
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			auth := &attest.AuthenticatorData{}
-			err := auth.Unmarshal(tt.data)
-			if err != nil {
-				if tt.wantErr == nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr.Error()) {
-					t.Errorf("ParseAuthData() error = %q, want error containing %q", err.Error(), tt.wantErr.Error())
-				}
+			err := auth.Unmarshal(tt.data, tt.requireCred)
+			if !assertErr(t, err, tt.wantErr) {
 				return
-			}
-			if tt.wantErr != nil {
-				t.Fatalf("expected error containing %q, got nil", tt.wantErr.Error())
 			}
 
 			if diff := cmp.Diff(tt.want, auth); diff != "" {

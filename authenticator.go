@@ -7,21 +7,59 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/takimoto3/app-attest/cbor"
 )
 
-// https://www.w3.org/TR/webauthn-2/#flags
-const (
-	//	UserPresent  byte = 1 << 0 // bit0: User Present (UP)
-	//	UserVerified byte = 1 << 2 // bit2: User Verified (UV)
-	Attested byte = 1 << 6 // bit6: Attested credential data included (AT)
-// Extensions   byte = 1 << 7 // bit7: Extension data included (ED)
-)
-
 const minAuthDataLen = 37
 
-var ErrUnknownKey = errors.New("authdata: unknown key")
+var (
+	ErrDuplicateKey = errors.New("attest: duplicate key")
+	ErrUnknownKey   = errors.New("attest: unknown key")
+	ErrMissingKey   = errors.New("attest: missing required key")
+)
+
+// AuthenticatorData extensions
+type cbkeyExtKey byte
+
+const (
+	cbkeyExtBundleVersion cbkeyExtKey = 1 << iota
+	cbkeyExtValidationCategory
+)
+
+// CoseKey
+type cbkeyCoseKey byte
+
+const (
+	cbkeyCoseKty cbkeyCoseKey = 1 << iota
+	cbkeyCoseAlg
+	cbkeyCoseCrv
+	cbkeyCoseX
+	cbkeyCoseY
+
+	cbkeyCoseAll = cbkeyCoseKty | cbkeyCoseAlg | cbkeyCoseCrv | cbkeyCoseX | cbkeyCoseY
+)
+
+func (k cbkeyCoseKey) Names() string {
+	var names []string
+	if k&cbkeyCoseKty != 0 {
+		names = append(names, "kty(1)")
+	}
+	if k&cbkeyCoseAlg != 0 {
+		names = append(names, "alg(3)")
+	}
+	if k&cbkeyCoseCrv != 0 {
+		names = append(names, "crv(-1)")
+	}
+	if k&cbkeyCoseX != 0 {
+		names = append(names, "x(-2)")
+	}
+	if k&cbkeyCoseY != 0 {
+		names = append(names, "y(-3)")
+	}
+	return strings.Join(names, ", ")
+}
 
 type AuthenticatorData struct {
 	RPIDHash                []byte
@@ -38,11 +76,7 @@ type AttestedCredential struct {
 	CoseKey      CoseKey
 }
 
-func (auth *AuthenticatorData) HasAttestedCredentialData() bool {
-	return auth.Flags&Attested != 0
-}
-
-func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
+func (auth *AuthenticatorData) Unmarshal(rawBytes []byte, requireCred bool) error {
 	if minAuthDataLen > len(rawBytes) {
 		return fmt.Errorf("authenticator data length too short: got %d bytes", len(rawBytes))
 	}
@@ -63,33 +97,31 @@ func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
 	}
 	auth.Counter = counter
 
-	if auth.HasAttestedCredentialData() {
-		if len(rawBytes) > minAuthDataLen {
-			aaguid, err := r.ReadBytes(16)
-			if err != nil {
-				return fmt.Errorf("failed to read AAGUID: %w", err)
-			}
-			credIDLen, err := r.ReadUint16()
-			if err != nil {
-				return fmt.Errorf("failed to read credential ID length: %w", err)
-			}
-			credID, err := r.ReadBytes(int(credIDLen))
-			if err != nil {
-				return fmt.Errorf("failed to read credential ID: %w", err)
-			}
-
-			auth.CredentialData = AttestedCredential{
-				AAGUID:       aaguid,
-				CredentialID: credID,
-			}
-
-			dec := cbor.NewDecoder(r.UnreadBytes())
-			auth.CredentialData.CoseKey = CoseKey{}
-			if err := auth.CredentialData.CoseKey.UnmarshalCBOR(dec); err != nil {
-				return err
-			}
-			r.Advance(len(r.UnreadBytes()) - dec.Len())
+	if requireCred {
+		aaguid, err := r.ReadBytes(16)
+		if err != nil {
+			return fmt.Errorf("failed to read AAGUID: %w", err)
 		}
+		credIDLen, err := r.ReadUint16()
+		if err != nil {
+			return fmt.Errorf("failed to read credential ID length: %w", err)
+		}
+		credID, err := r.ReadBytes(int(credIDLen))
+		if err != nil {
+			return fmt.Errorf("failed to read credential ID: %w", err)
+		}
+
+		auth.CredentialData = AttestedCredential{
+			AAGUID:       aaguid,
+			CredentialID: credID,
+		}
+
+		dec := cbor.NewDecoder(r.UnreadBytes())
+		auth.CredentialData.CoseKey = CoseKey{}
+		if err := auth.CredentialData.CoseKey.UnmarshalCBOR(dec); err != nil {
+			return fmt.Errorf("failed to parse COSE key: %w", err)
+		}
+		r.Advance(len(r.UnreadBytes()) - dec.Len())
 	}
 	if r.Len() > 0 {
 		dec := cbor.NewDecoder(r.UnreadBytes())
@@ -107,6 +139,8 @@ func (auth *AuthenticatorData) Unmarshal(rawBytes []byte) error {
 }
 
 func (auth *AuthenticatorData) unmarshalExtensions(dec *cbor.Decoder) error {
+	var gotKeys cbkeyExtKey
+
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
 		return fmt.Errorf("failed to read CBOR map header: %w", err)
@@ -132,6 +166,10 @@ func (auth *AuthenticatorData) unmarshalExtensions(dec *cbor.Decoder) error {
 		}
 		switch key {
 		case "apple_bundle_version_01":
+			if gotKeys&cbkeyExtBundleVersion != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cbkeyExtBundleVersion
 			mt, ai, err := dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "apple_bundle_version_01") %d: %w`, i, err)
@@ -145,6 +183,10 @@ func (auth *AuthenticatorData) unmarshalExtensions(dec *cbor.Decoder) error {
 			}
 			auth.AppleBundleVersion = version
 		case "apple_validation_category_01":
+			if gotKeys&cbkeyExtValidationCategory != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cbkeyExtValidationCategory
 			mt, ai, err := dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "apple_validation_category_01") %d: %w`, i, err)
@@ -193,6 +235,7 @@ func (k *CoseKey) ParsePublicKey() (*ecdsa.PublicKey, error) {
 }
 
 func (k *CoseKey) UnmarshalCBOR(dec *cbor.Decoder) error {
+	var gotKeys cbkeyCoseKey
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
 		return fmt.Errorf("failed to read CBOR map header: %w", err)
@@ -223,6 +266,10 @@ func (k *CoseKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 
 		switch key {
 		case 1: // Kty
+			if gotKeys&cbkeyCoseKty != 0 {
+				return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
+			}
+			gotKeys |= cbkeyCoseKty
 			mt, ai, err := dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf("failed to read Kty header (key 1): %w", err)
@@ -237,6 +284,10 @@ func (k *CoseKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 			k.Kty = int(val)
 
 		case 3: // Alg
+			if gotKeys&cbkeyCoseAlg != 0 {
+				return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
+			}
+			gotKeys |= cbkeyCoseAlg
 			mt, ai, err := dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf("failed to read Alg header (key 3): %w", err)
@@ -251,6 +302,10 @@ func (k *CoseKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 			k.Alg = int(val)
 
 		case -1: // Crv
+			if gotKeys&cbkeyCoseCrv != 0 {
+				return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
+			}
+			gotKeys |= cbkeyCoseCrv
 			mt, ai, err := dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf("failed to read Crv header (key -1): %w", err)
@@ -265,6 +320,10 @@ func (k *CoseKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 			k.Crv = int(val)
 
 		case -2: // X coordinate
+			if gotKeys&cbkeyCoseX != 0 {
+				return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
+			}
+			gotKeys |= cbkeyCoseX
 			mt, ai, err := dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf("failed to read X coordinate header (key -2): %w", err)
@@ -279,6 +338,10 @@ func (k *CoseKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 			k.X = val
 
 		case -3: // Y coordinate
+			if gotKeys&cbkeyCoseY != 0 {
+				return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
+			}
+			gotKeys |= cbkeyCoseY
 			mt, ai, err := dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf("failed to read Y coordinate header (key -3): %w", err)
@@ -296,6 +359,10 @@ func (k *CoseKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 			return fmt.Errorf("%w: %d", ErrUnknownKey, key)
 		}
 	}
+	if missing := cbkeyCoseAll &^ gotKeys; missing != 0 {
+		return fmt.Errorf("%w: %s", ErrMissingKey, missing.Names())
+	}
+
 	return nil
 }
 

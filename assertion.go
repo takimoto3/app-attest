@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/takimoto3/app-attest/cbor"
 )
@@ -14,6 +15,27 @@ var (
 	ErrInvalidSignature = errors.New("invalid the assertion signature")
 	ErrUnmatchRPIDHash  = errors.New("RP Hash mismatch")
 )
+
+// cborAssertKey is a bit flag for a required CBOR map key of AssertionObject.
+type cborAssertKey byte
+
+const (
+	cborAssertSignature cborAssertKey = 1 << iota
+	cborAssertAuthData
+
+	cborAssertAll = cborAssertSignature | cborAssertAuthData
+)
+
+func (k cborAssertKey) Names() string {
+	var names []string
+	if k&cborAssertSignature != 0 {
+		names = append(names, "signature")
+	}
+	if k&cborAssertAuthData != 0 {
+		names = append(names, "authenticatorData")
+	}
+	return strings.Join(names, ", ")
+}
 
 type AssertionObject struct {
 	// ASN.1 Encoded as a Sequence of two integers
@@ -28,8 +50,86 @@ type AssertionService struct {
 	Counter   uint32
 }
 
+// AssertionState is the server-side state for the registered key being
+// verified. Load it from your own storage for each request; do not
+// derive AppID from the client's request.
+//
+// Challenge generation, expiry and single use are the caller's
+// responsibility; this package only compares it with the value passed to
+// VerifyWithState.
+type AssertionState struct {
+	AppID             string           // "<TeamID>.<BundleID>" recorded at attestation time
+	PublicKey         *ecdsa.PublicKey // key saved from the attestation
+	OriginalChallenge string           // challenge the server issued for this assertion
+	Counter           uint32           // last accepted sign count (0 if none yet)
+}
+
+type AssertionResult struct {
+	// Counter is the new sign count. Persist it with an atomic
+	// compare-and-set, and reject any future assertion whose counter isn't
+	// strictly greater.
+	Counter uint32
+
+	// AppleBundleVersion is the attested CFBundleVersion. Empty on iOS 26
+	// and earlier, which lack this extension.
+	AppleBundleVersion string
+
+	// AppleValidationCategory is the attested distribution channel
+	// (App Store, TestFlight, Development, etc). Zero value on iOS 26
+	// and earlier, which lack this extension.
+	AppleValidationCategory ValidationCategory
+}
+
 // Verify checks a single assertion object and returns the counter.
+//
+// Deprecated: Use VerifyWithState instead. It returns the
+// Apple-attested bundle version and validation category (iOS 27+), and
+// takes AppID, PublicKey, Challenge and Counter as an AssertionState
+// argument rather than from AssertionService fields, so a single
+// AssertionService can be shared across requests.
 func (service *AssertionService) Verify(assertObject *AssertionObject, challenge string, clientData []byte) (uint32, error) {
+	state := AssertionState{
+		AppID:             service.AppID,
+		PublicKey:         service.PublicKey,
+		OriginalChallenge: service.Challenge,
+		Counter:           service.Counter,
+	}
+	result, err := service.verify(assertObject, challenge, clientData, state)
+	if err != nil {
+		return 0, err
+	}
+	return result.Counter, nil
+}
+
+// VerifyWithState checks a single assertion object and returns the
+// verification result, including the sign counter and any Apple-attested
+// app-version extensions (iOS 27+).
+// challenge is the value the client returned; extract it from clientData
+// itself (the bytes covered by the signature), not from any other part of
+// the request. state is read-only: persist AssertionResult.Counter
+// yourself.
+//
+// Error messages may contain the expected challenge; do not return them
+// to clients. The result is nil on error.
+func (service *AssertionService) VerifyWithState(assertObject *AssertionObject, challenge string, clientData []byte, state AssertionState) (*AssertionResult, error) {
+	return service.verify(assertObject, challenge, clientData, state)
+}
+
+func (service *AssertionService) verify(assertObject *AssertionObject, clientChallenge string, clientData []byte, state AssertionState) (*AssertionResult, error) {
+	// Input checks: reject unusable input before touching crypto.
+	if assertObject == nil {
+		return nil, errors.New("assertion object is nil")
+	}
+	if clientChallenge == "" {
+		return nil, errors.New("challenge is empty")
+	}
+	if state.AppID == "" {
+		return nil, errors.New("assertion state: AppID is empty")
+	}
+	if !isPublicKeyComplete(state.PublicKey) {
+		return nil, errors.New("assertion state: PublicKey is nil or incomplete")
+	}
+
 	// 1. Compute clientDataHash as the SHA256 hash of clientData.
 	clientDataHash := sha256.Sum256(clientData)
 
@@ -39,39 +139,49 @@ func (service *AssertionService) Verify(assertObject *AssertionObject, challenge
 	hash.Write(clientDataHash[:])
 	nonce := hash.Sum(nil)
 
+	// Apple Secure Enclave treats 'nonce' as a raw message payload and signs it using ECDSA-SHA256,
+	// effectively calculating SHA256(nonce) internally before P-256 signing.
+	// Since ecdsa.VerifyASN1 expects the final digest directly, we must compute SHA256(nonce) here.
+	nonceHash := sha256.Sum256(nonce)
+
 	// 3. Use the public key that you store from the attestation object to verify that the assertion’s signature is valid for nonce.
-	nonceHash := sha256.Sum256(nonce[:])
-	if ok := ecdsa.VerifyASN1(service.PublicKey, nonceHash[:], assertObject.Signature); !ok {
-		return 0, ErrInvalidSignature
+	if ok := ecdsa.VerifyASN1(state.PublicKey, nonceHash[:], assertObject.Signature); !ok {
+		return nil, ErrInvalidSignature
 	}
 
 	// 4. Compute the SHA256 hash of the client’s App ID, and verify that it matches the RP ID in the authenticator data.
 	authData := AuthenticatorData{}
-	if err := authData.Unmarshal(assertObject.AuthData); err != nil {
-		return 0, fmt.Errorf("authenticator data decoding failed: %w", err)
+	if err := authData.Unmarshal(assertObject.AuthData, false); err != nil {
+		return nil, fmt.Errorf("authenticator data decoding failed: %w", err)
 	}
-	appIDHash := sha256.Sum256([]byte(service.AppID))
+	appIDHash := sha256.Sum256([]byte(state.AppID))
 	if !bytes.Equal(authData.RPIDHash[:], appIDHash[:]) {
-		return 0, ErrUnmatchRPIDHash
+		return nil, ErrUnmatchRPIDHash
 	}
 
 	// 5. Verify that the authenticator data’s counter value is greater than the value from the previous assertion, or greater than 0 on the first assertion.
-	if authData.Counter <= service.Counter {
-		return 0, fmt.Errorf("counter was not not greater than previous [%d, previous: %d]", authData.Counter, service.Counter)
+	if authData.Counter <= state.Counter {
+		return nil, fmt.Errorf("counter was not greater than previous [%d, previous: %d]", authData.Counter, state.Counter)
 	}
 
 	// 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
-	if challenge != service.Challenge {
-		return 0, fmt.Errorf("invalid challenge expected: %s, received: %s", service.Challenge, challenge)
+	if clientChallenge != state.OriginalChallenge {
+		return nil, errors.New("invalid challenge")
 	}
 
-	return authData.Counter, nil
+	return &AssertionResult{
+		Counter:                 authData.Counter,
+		AppleBundleVersion:      authData.AppleBundleVersion,
+		AppleValidationCategory: ValidationCategory(authData.AppleValidationCategory),
+	}, nil
 }
 
 // UnmarshalCBOR decodes the CBOR-encoded data into the AssertionObject.
 //
 // Returns an error if the data is malformed or contains unexpected types.
 func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
+	var gotKeys cborAssertKey
+
 	dec := cbor.NewDecoder(data)
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
@@ -98,6 +208,10 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 		}
 		switch key {
 		case "signature":
+			if gotKeys&cborAssertSignature != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cborAssertSignature
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "signature") at index %d: %w`, i, err)
@@ -111,6 +225,10 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 			}
 			ao.Signature = val
 		case "authenticatorData":
+			if gotKeys&cborAssertAuthData != 0 {
+				return fmt.Errorf("%w: %s", ErrDuplicateKey, key)
+			}
+			gotKeys |= cborAssertAuthData
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
 				return fmt.Errorf(`failed to read map value header (key "authenticatorData") at index %d: %w`, i, err)
@@ -127,5 +245,15 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 			return fmt.Errorf("%w: %s", ErrUnknownKey, key)
 		}
 	}
+	if missing := cborAssertAll &^ gotKeys; missing != 0 {
+		return fmt.Errorf("%w: %s", ErrMissingKey, missing.Names())
+	}
+
 	return nil
+}
+
+// isPublicKeyComplete reports whether k has all fields required for ECDSA
+// signature verification.
+func isPublicKeyComplete(k *ecdsa.PublicKey) bool {
+	return k != nil && k.Curve != nil && k.X != nil && k.Y != nil
 }
