@@ -7,7 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/google/go-cmp v0.7.0
 	github.com/smallstep/pkcs7 v0.2.1
-	github.com/takimoto3/appleapi-core v1.2.1
+	github.com/takimoto3/appleapi-core v1.2.2
 	github.com/tenntenn/testtime v0.3.2
 )
 
