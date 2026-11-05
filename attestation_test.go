@@ -73,29 +73,38 @@ var aclBlobOID = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 6}
 // can build a certificate whose aclBlob matches (or intentionally does not match).
 const expectedACLBase64 = "MEAMAjExMDowCQwCb2uhAwEB/zAJDAJvYaEDAQH/MAsMBG9kZWyhAwEB/zAVDARvc2duoAYMBHJzZWMwBaYDAgEB"
 
+// derWrapped encodes inner as SEQUENCE { [1] { OCTET STRING inner } },
+// the App Attest extension encoding.
+func derWrapped(inner []byte) []byte {
+	octet, err := asn1.Marshal(inner)
+	if err != nil {
+		panic(err)
+	}
+	seq, err := asn1.Marshal([]asn1.RawValue{{
+		Class: asn1.ClassContextSpecific, Tag: 1, IsCompound: true, Bytes: octet,
+	}})
+	if err != nil {
+		panic(err)
+	}
+	return seq
+}
+
 // withACLBlob attaches a correctly DER-wrapped aclBlob extension (OCTET STRING inside
 // a SEQUENCE) with the given raw blob value.
 func withACLBlob(blob []byte) certOption {
 	return func(c *x509.Certificate) {
-		innerOctet, err := asn1.Marshal(blob)
-		if err != nil {
-			panic(err)
+		ext := pkix.Extension{Id: aclBlobOID, Value: derWrapped(blob)}
+		for i, e := range c.ExtraExtensions {
+			if e.Id.Equal(aclBlobOID) {
+				c.ExtraExtensions[i] = ext
+				return
+			}
 		}
-		wrapped := asn1.RawValue{
-			Class:      asn1.ClassContextSpecific,
-			Tag:        1,
-			IsCompound: true,
-			Bytes:      innerOctet,
-		}
-		seq, err := asn1.Marshal([]asn1.RawValue{wrapped})
-		if err != nil {
-			panic(err)
-		}
-		c.ExtraExtensions = append(c.ExtraExtensions, pkix.Extension{Id: aclBlobOID, Value: seq})
+		c.ExtraExtensions = append(c.ExtraExtensions, ext)
 	}
 }
 
-func decodeExpectedACL(t *testing.T) []byte {
+func decodeExpectedACL(t testing.TB) []byte {
 	t.Helper()
 	b, err := base64.StdEncoding.DecodeString(expectedACLBase64)
 	if err != nil {
@@ -185,36 +194,16 @@ func replace(parts [][]byte, i int, v []byte) [][]byte {
 	return out
 }
 
-// buildCredCert builds the leaf credential cert with a correct nonce extension
-// derived from authData + clientDataHash, unless overridden by opts.
-func (tc *testChain) buildCredCert(t testing.TB, authData, clientDataHash []byte, opts ...certOption) []byte {
+// issue builds the leaf credential cert for pub. By default it carries a correct
+// nonce extension (authData + clientDataHash) and the expected aclBlob; opts can
+// override or remove either.
+func (tc *testChain) issue(t testing.TB, pub any, authData, clientDataHash []byte, opts ...certOption) []byte {
 	t.Helper()
 	now := time.Now()
 
 	h := sha256.New()
 	h.Write(authData)
 	h.Write(clientDataHash)
-	nonce := h.Sum(nil)
-
-	// inner: OCTET STRING nonce TLV
-	innerOctet, err := asn1.Marshal(nonce)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// wrapped: [1] { OCTET STRING nonce } wrapped with context-specific constructed tag
-	wrapped := asn1.RawValue{
-		Class:      asn1.ClassContextSpecific,
-		Tag:        1,
-		IsCompound: true,
-		Bytes:      innerOctet,
-	}
-
-	// seq: SEQUENCE { wrapped }
-	seq, err := asn1.Marshal([]asn1.RawValue{wrapped})
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
@@ -222,55 +211,12 @@ func (tc *testChain) buildCredCert(t testing.TB, authData, clientDataHash []byte
 		NotBefore:    now.Add(-time.Hour),
 		NotAfter:     now.Add(time.Hour),
 		ExtraExtensions: []pkix.Extension{
-			{Id: credCertOID, Value: seq},
+			{Id: credCertOID, Value: derWrapped(h.Sum(nil))},
+			{Id: aclBlobOID, Value: derWrapped(decodeExpectedACL(t))},
 		},
 	}
 	for _, opt := range opts {
 		opt(tmpl)
-	}
-
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tc.intermediate, &tc.credKey.PublicKey, tc.intermediateKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return der
-}
-
-// buildCredCertWithKey behaves like buildCredCert but signs the credential
-// certificate for an arbitrary public key, so tests can exercise credential
-// certificates whose key type isn't ECDSA.
-func (tc *testChain) buildCredCertWithKey(t testing.TB, pub any, authData, clientDataHash []byte) []byte {
-	t.Helper()
-	now := time.Now()
-
-	h := sha256.New()
-	h.Write(authData)
-	h.Write(clientDataHash)
-	nonce := h.Sum(nil)
-
-	innerOctet, err := asn1.Marshal(nonce)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrapped := asn1.RawValue{
-		Class:      asn1.ClassContextSpecific,
-		Tag:        1,
-		IsCompound: true,
-		Bytes:      innerOctet,
-	}
-	seq, err := asn1.Marshal([]asn1.RawValue{wrapped})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "test credential"},
-		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     now.Add(time.Hour),
-		ExtraExtensions: []pkix.Extension{
-			{Id: credCertOID, Value: seq},
-		},
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tc.intermediate, pub, tc.intermediateKey)
@@ -278,6 +224,21 @@ func (tc *testChain) buildCredCertWithKey(t testing.TB, pub any, authData, clien
 		t.Fatal(err)
 	}
 	return der
+}
+
+// buildCredCert builds the leaf credential cert with a correct nonce extension
+// derived from authData + clientDataHash, unless overridden by opts.
+func (tc *testChain) buildCredCert(t testing.TB, authData, clientDataHash []byte, opts ...certOption) []byte {
+	t.Helper()
+	return tc.issue(t, &tc.credKey.PublicKey, authData, clientDataHash, opts...)
+}
+
+// buildCredCertWithKey behaves like buildCredCert but signs the credential
+// certificate for an arbitrary public key, so tests can exercise credential
+// certificates whose key type isn't ECDSA.
+func (tc *testChain) buildCredCertWithKey(t testing.TB, pub any, authData, clientDataHash []byte) []byte {
+	t.Helper()
+	return tc.issue(t, pub, authData, clientDataHash)
 }
 
 func TestAttestationService_Verify(t *testing.T) {
@@ -377,7 +338,14 @@ func TestAttestationService_Verify(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	type platform int
+	const (
+		iOS platform = iota
+		macOS
+	)
+
 	tests := map[string]struct {
+		platform       platform
 		rootCA         *x509.CertPool
 		identifier     string
 		attestObject   *attest.AttestationObject
@@ -717,7 +685,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("credCert extension parse error"),
+			wantErr:        expectError("credCert extension: parse sequence"),
 		},
 		"certificate not yet valid": {
 			rootCA:     rootCA,
@@ -831,35 +799,146 @@ func TestAttestationService_Verify(t *testing.T) {
 			keyID:          keyID[:],
 			wantErr:        expectError("credCert extension does not match nonce"),
 		},
+		"macOS: missing aclBlob": {
+			platform:   macOS,
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C: [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:],
+						withoutExtension(aclBlobOID)), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("certificate didn't contain aclBlob extension"),
+		},
+		"macOS: aclBlob mismatch": {
+			platform:   macOS,
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C: [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:],
+						withACLBlob([]byte("wrong"))), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("aclBlob does not match expected value"),
+		},
+		"macOS: corrupted aclBlob (invalid ASN.1)": {
+			platform:   macOS,
+			rootCA:     rootCA,
+			identifier: appID,
+			attestObject: &attest.AttestationObject{
+				AuthData: productionAuthData,
+				Format:   "apple-appattest",
+				AttStmt: attest.AttStmt{
+					X5C: [][]byte{chain.buildCredCert(t, productionAuthData, clientDataHash[:],
+						withCorruptedExtension(aclBlobOID, []byte{0xFF, 0xFF})), chain.intermediateDER},
+					Receipt: []byte("dummy-receipt-bytes"),
+				},
+			},
+			clientDataHash: clientDataHash[:],
+			keyID:          keyID[:],
+			wantErr:        expectError("aclBlob extension: parse sequence"),
+		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Run("VerifyForiOS", func(t *testing.T) {
+			t.Run("VerifyForMacOS", func(t *testing.T) {
 				target := attest.AttestationService{RootCertPool: tt.rootCA}
 
-				result, err := target.VerifyForiOS(tt.attestObject, tt.identifier, tt.clientDataHash, tt.keyID)
+				result, err := target.VerifyForMacOS(tt.attestObject, tt.identifier, tt.clientDataHash, tt.keyID)
 				if !assertErr(t, err, tt.wantErr) {
 					return
 				}
 
 				if diff := cmp.Diff(tt.want, result); diff != "" {
-					t.Errorf("Verify() mismatch (-want +got):\n%s", diff)
+					t.Errorf("VerifyForMacOS() mismatch (-want +got):\n%s", diff)
 				}
 			})
-			t.Run("Verify", func(t *testing.T) {
-				target := attest.NewAttestationService(tt.rootCA, tt.identifier)
+			if tt.platform != macOS {
+				t.Run("VerifyForiOS", func(t *testing.T) {
+					target := attest.AttestationService{RootCertPool: tt.rootCA}
 
-				result, err := target.Verify(tt.attestObject, tt.clientDataHash, tt.keyID)
-				if !assertErr(t, err, tt.wantErr) {
-					return
-				}
+					result, err := target.VerifyForiOS(tt.attestObject, tt.identifier, tt.clientDataHash, tt.keyID)
+					if !assertErr(t, err, tt.wantErr) {
+						return
+					}
 
-				if diff := cmp.Diff(tt.want, result); diff != "" {
-					t.Errorf("Verify() mismatch (-want +got):\n%s", diff)
-				}
-			})
+					if diff := cmp.Diff(tt.want, result); diff != "" {
+						t.Errorf("VerifyForiOS() mismatch (-want +got):\n%s", diff)
+					}
+				})
+				t.Run("Verify", func(t *testing.T) {
+					target := attest.NewAttestationService(tt.rootCA, tt.identifier)
+
+					result, err := target.Verify(tt.attestObject, tt.clientDataHash, tt.keyID)
+					if !assertErr(t, err, tt.wantErr) {
+						return
+					}
+
+					if diff := cmp.Diff(tt.want, result); diff != "" {
+						t.Errorf("Verify() mismatch (-want +got):\n%s", diff)
+					}
+				})
+			}
 		})
+	}
+}
+
+func TestVerifyForiOS_IgnoresACLBlob(t *testing.T) {
+	chain := newTestChain(t)
+	rootCA := x509.NewCertPool()
+	rootCA.AddCert(chain.root)
+
+	const appID = "1234567890.com.example.myapp"
+	clientDataHash := sha256.Sum256([]byte("example_server_challenge"))
+
+	pub, err := chain.credKey.PublicKey.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID := sha256.Sum256(pub)
+
+	authData := merge(
+		sha2(appID),
+		[]byte{0x40},
+		[]byte{0x00, 0x00, 0x00, 0x00},
+		[]byte("appattest\x00\x00\x00\x00\x00\x00\x00"),
+		binary.BigEndian.AppendUint16(nil, uint16(len(keyID))),
+		keyID[:],
+		cborMap(
+			item{cborUint(1), cborUint(2)},
+			item{cborUint(3), cborNegInt(-7)},
+			item{cborNegInt(-1), cborUint(1)},
+			item{cborNegInt(-2), cborBytes(chain.credKey.PublicKey.X.FillBytes(make([]byte, 32)))},
+			item{cborNegInt(-3), cborBytes(chain.credKey.PublicKey.Y.FillBytes(make([]byte, 32)))},
+		),
+	)
+
+	obj := &attest.AttestationObject{
+		AuthData: authData,
+		Format:   "apple-appattest",
+		AttStmt: attest.AttStmt{
+			X5C: [][]byte{chain.buildCredCert(t, authData, clientDataHash[:],
+				withoutExtension(aclBlobOID)), chain.intermediateDER},
+			Receipt: []byte("dummy-receipt-bytes"),
+		},
+	}
+
+	svc := attest.AttestationService{RootCertPool: rootCA}
+	if _, err := svc.VerifyForiOS(obj, appID, clientDataHash[:], keyID[:]); err != nil {
+		t.Fatalf("VerifyForiOS should ignore aclBlob, got: %v", err)
 	}
 }
 

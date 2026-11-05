@@ -187,6 +187,17 @@ func (service *AttestationService) VerifyForiOS(attestObj *AttestationObject, ap
 	return service.verify(iOS, attestObj, appID, clientDataHash, keyID)
 }
 
+// VerifyForMacOS validates a single macOS attestation object and returns the result.
+//
+// appID is teamID + "." + signing identifier. Unlike iOS, macOS uses the
+// code signing identifier instead of the bundle identifier for the RP ID.
+//
+// The aclBlob extension (OID 1.2.840.113635.100.8.6) must match the access
+// policy hash for SIP enabled and Full Security mode.
+func (service *AttestationService) VerifyForMacOS(attestObj *AttestationObject, appID string, clientDataHash, keyID []byte) (*Result, error) {
+	return service.verify(macOS, attestObj, appID, clientDataHash, keyID)
+}
+
 // Verify validates a single attestation object and returns the result.
 //
 // Deprecated: use VerifyForiOS, which takes the App ID explicitly.
@@ -210,7 +221,6 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	if len(attestObj.AttStmt.X5C) == 0 {
 		return nil, errors.New("AttStmt: empty data")
 	}
-	receipt := attestObj.AttStmt.Receipt
 	intermediates := x509.NewCertPool()
 
 	x5chain := attestObj.AttStmt.X5C
@@ -237,6 +247,27 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 		return nil, fmt.Errorf("invalid certificate: %w", err)
 	}
 
+	// 2-9. The chain is trusted at this point; verify the remaining claims.
+	return verifyAttestationClaims(platform, attestObj, credCert, identifier, clientDataHash, keyID)
+}
+
+// verifyCredentialCertificate verifies an App Attest credential chain without applying
+// crypto/x509's default TLS ServerAuth extended-key-usage policy. App Attest credential
+// certificates are attestation credentials, not TLS server certificates.
+func verifyCredentialCertificate(credential *x509.Certificate, roots, intermediates *x509.CertPool) error {
+	_, err := credential.Verify(x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	})
+	return err
+}
+
+// verifyAttestationClaims performs steps 2-9 of Apple's attestation validation.
+//
+// It does NOT verify the certificate chain (step 1). Callers must have
+// verified credCert against the App Attest root before calling this.
+func verifyAttestationClaims(platform Platform, attestObj *AttestationObject, credCert *x509.Certificate, identifier string, clientDataHash, keyID []byte) (*Result, error) {
 	// 2. Create clientDataHash as the SHA256 hash of the one-time challenge sent to your app before performing the attestation,
 	//  and append that hash to the end of the authenticator data (authData from the decoded object).
 	// 3. Generate a new SHA256 hash of the composite item to create nonce.
@@ -262,21 +293,11 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	if len(credCertExtension) == 0 {
 		return nil, fmt.Errorf("certificate didn't contain credCert extension")
 	}
-	var sequence []asn1.RawValue
-	if _, err = asn1.Unmarshal(credCertExtension, &sequence); err != nil {
-		return nil, fmt.Errorf("credCert extension parse error: %w", err)
+	credCertNonce, err := extractOctetString(credCertExtension)
+	if err != nil {
+		return nil, fmt.Errorf("credCert extension: %w", err)
 	}
-	if len(sequence) != 1 {
-		return nil, fmt.Errorf("invalid credCert extension structure")
-	}
-	var octetString asn1.RawValue
-	if _, err = asn1.Unmarshal(sequence[0].Bytes, &octetString); err != nil {
-		return nil, fmt.Errorf("credCert extension value parse error: %w", err)
-	}
-	if octetString.Class != asn1.ClassUniversal || octetString.Tag != asn1.TagOctetString {
-		return nil, fmt.Errorf("invalid credCert extension value")
-	}
-	if !bytes.Equal(nonce, octetString.Bytes) {
+	if !bytes.Equal(nonce, credCertNonce) {
 		return nil, fmt.Errorf("credCert extension does not match nonce")
 	}
 
@@ -286,21 +307,11 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 		if len(aclBlobExtension) == 0 {
 			return nil, fmt.Errorf("certificate didn't contain aclBlob extension")
 		}
-		var sequence []asn1.RawValue
-		var octetString asn1.RawValue
-		if _, err = asn1.Unmarshal(aclBlobExtension, &sequence); err != nil {
-			return nil, fmt.Errorf("aclBlob extension parse error: %w", err)
+		aclBlob, err := extractOctetString(aclBlobExtension)
+		if err != nil {
+			return nil, fmt.Errorf("aclBlob extension: %w", err)
 		}
-		if len(sequence) != 1 {
-			return nil, fmt.Errorf("invalid aclBlob extension structure")
-		}
-		if _, err = asn1.Unmarshal(sequence[0].Bytes, &octetString); err != nil {
-			return nil, fmt.Errorf("aclBlob extension value parse error: %w", err)
-		}
-		if octetString.Class != asn1.ClassUniversal || octetString.Tag != asn1.TagOctetString {
-			return nil, fmt.Errorf("invalid aclBlob extension value")
-		}
-		if !bytes.Equal(expectedACL, octetString.Bytes) {
+		if !bytes.Equal(expectedACL, aclBlob) {
 			return nil, fmt.Errorf("aclBlob does not match expected value")
 		}
 	}
@@ -359,7 +370,7 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 		// buffer (ReadByteString in this cbor package is zero-copy despite
 		// its name — there is no copying variant). Result.Receipt is meant
 		// for long-term storage by callers, so it must be cloned here.
-		Receipt:                 bytes.Clone(receipt),
+		Receipt:                 bytes.Clone(attestObj.AttStmt.Receipt),
 		PublicKey:               pubkey,
 		Environment:             env,
 		AppleBundleVersion:      authData.AppleBundleVersion,
@@ -367,16 +378,25 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	}, nil
 }
 
-// verifyCredentialCertificate verifies an App Attest credential chain without applying
-// crypto/x509's default TLS ServerAuth extended-key-usage policy. App Attest credential
-// certificates are attestation credentials, not TLS server certificates.
-func verifyCredentialCertificate(credential *x509.Certificate, roots, intermediates *x509.CertPool) error {
-	_, err := credential.Verify(x509.VerifyOptions{
-		Roots:         roots,
-		Intermediates: intermediates,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-	})
-	return err
+// extractOctetString decodes the App Attest extension encoding: a DER
+// SEQUENCE holding a single (context-specific) element that wraps an
+// OCTET STRING, and returns that OCTET STRING's bytes.
+func extractOctetString(ext []byte) ([]byte, error) {
+	var seq []asn1.RawValue
+	if _, err := asn1.Unmarshal(ext, &seq); err != nil {
+		return nil, fmt.Errorf("parse sequence: %w", err)
+	}
+	if len(seq) != 1 {
+		return nil, errors.New("invalid structure")
+	}
+	var oct asn1.RawValue
+	if _, err := asn1.Unmarshal(seq[0].Bytes, &oct); err != nil {
+		return nil, fmt.Errorf("parse octet string: %w", err)
+	}
+	if oct.Class != asn1.ClassUniversal || oct.Tag != asn1.TagOctetString {
+		return nil, errors.New("invalid octet string")
+	}
+	return oct.Bytes, nil
 }
 
 // UnmarshalCBOR decodes CBOR data into the AttestationObject.
