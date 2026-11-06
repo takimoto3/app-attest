@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/takimoto3/app-attest/cbor"
 )
@@ -20,6 +21,13 @@ const maxX5CCerts = 8
 //
 // Ref: https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server
 var expectedACL = []byte{0x30, 0x40, 0xc, 0x2, 0x31, 0x31, 0x30, 0x3a, 0x30, 0x9, 0xc, 0x2, 0x6f, 0x6b, 0xa1, 0x3, 0x1, 0x1, 0xff, 0x30, 0x9, 0xc, 0x2, 0x6f, 0x61, 0xa1, 0x3, 0x1, 0x1, 0xff, 0x30, 0xb, 0xc, 0x4, 0x6f, 0x64, 0x65, 0x6c, 0xa1, 0x3, 0x1, 0x1, 0xff, 0x30, 0x15, 0xc, 0x4, 0x6f, 0x73, 0x67, 0x6e, 0xa0, 0x6, 0xc, 0x4, 0x72, 0x73, 0x65, 0x63, 0x30, 0x5, 0xa6, 0x3, 0x2, 0x1, 0x1}
+
+// verifyOption customizes verify. Unexported: not reachable from outside the package.
+type verifyOption func(*verifyConfig)
+
+type verifyConfig struct {
+	now time.Time // zero means time.Now
+}
 
 // Environment identifies the App Attest environment an attestation was
 // issued in.
@@ -205,7 +213,7 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 	return service.verify(iOS, attestObj, service.AppID, clientDataHash, keyID)
 }
 
-func (service *AttestationService) verify(platform Platform, attestObj *AttestationObject, identifier string, clientDataHash, keyID []byte) (*Result, error) {
+func (service *AttestationService) verify(platform Platform, attestObj *AttestationObject, identifier string, clientDataHash, keyID []byte, opts ...verifyOption) (*Result, error) {
 	if service.RootCertPool == nil {
 		return nil, errors.New("root certificate pool is nil")
 	}
@@ -242,7 +250,7 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	// 1. Verify that the x5c array contains the intermediate and leaf certificates for App Attest,
 	//  starting from the credential certificate in the first data buffer in the array (credcert).
 	//  Verify the validity of the certificates using Apple’s App Attest root certificate.
-	err = verifyCredentialCertificate(credCert, service.RootCertPool, intermediates)
+	err = verifyCredentialCertificate(credCert, service.RootCertPool, intermediates, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("invalid certificate: %w", err)
 	}
@@ -254,11 +262,16 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 // verifyCredentialCertificate verifies an App Attest credential chain without applying
 // crypto/x509's default TLS ServerAuth extended-key-usage policy. App Attest credential
 // certificates are attestation credentials, not TLS server certificates.
-func verifyCredentialCertificate(credential *x509.Certificate, roots, intermediates *x509.CertPool) error {
+func verifyCredentialCertificate(credential *x509.Certificate, roots, intermediates *x509.CertPool, opts ...verifyOption) error {
+	var cfg verifyConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	_, err := credential.Verify(x509.VerifyOptions{
 		Roots:         roots,
 		Intermediates: intermediates,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		CurrentTime:   cfg.now,
 	})
 	return err
 }
