@@ -5,7 +5,7 @@
 App-Attest is a Go package that implements the server-side validation of both attestations and assertions that can be obtained using the [DCAppAttestService](https://developer.apple.com/documentation/devicecheck/dcappattestservice).
 
 ## Features
-* Validate attestations
+* Validate attestations (iOS and macOS)
 * Validate assertions (including the iOS 27+ bundle version / validation category extensions)
 * Assess fraud risk by requesting and analyzing risk data from Apple's servers
 
@@ -79,6 +79,24 @@ if err != nil {
 * `AppleBundleVersion` and `AppleValidationCategory` (iOS 27+ only; empty / zero on earlier versions)
 
 > **Note:** `AttestationService.Verify` (which takes the App ID from the service's `AppID` field) is deprecated. Use `VerifyForiOS`, which takes the App ID explicitly. `attest.Sandbox` is likewise a deprecated alias of `attest.Development`.
+
+#### macOS
+
+For attestations generated on macOS, call `VerifyForMacOS` instead:
+
+```go
+result, err := service.VerifyForMacOS(
+    attestationObj,
+    "<TEAM ID>.<Signing Identifier>", // your code signing identifier, not the bundle ID
+    clientDataHash[:],
+    keyID,
+)
+```
+
+Differences from iOS:
+
+* The App ID is `<TEAM ID>.<code signing identifier>`, not the bundle identifier.
+* The credential certificate's `aclBlob` extension (OID `1.2.840.113635.100.8.6`) must match the access policy for **SIP enabled and Full Security mode**. Attestations from keys under any other policy are rejected with `aclBlob does not match expected value`.
 
 ### Assertion
 
