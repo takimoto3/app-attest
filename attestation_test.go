@@ -423,7 +423,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			attestObject:   nil,
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("attestObj is nil"),
+			wantErr:        expectError("attest: attestObj is nil"),
 		},
 		"RootCertPool is nil": {
 			identifier: appID,
@@ -435,7 +435,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("root certificate pool is nil"),
+			wantErr:        expectError("attest: root certificate pool is nil"),
 		},
 		"invalid format": {
 			rootCA:     rootCA,
@@ -448,7 +448,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError(`invalid attestation format: "packed"`),
+			wantErr:        expectError(`attest: invalid attestation format: "packed"`),
 		},
 		"AuthData is empty": {
 			rootCA:     rootCA,
@@ -460,7 +460,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("authData: empty data"),
+			wantErr:        expectError("attest: authData: empty data"),
 		},
 		"AttStmt has no data": {
 			rootCA:     rootCA,
@@ -472,7 +472,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("AttStmt: empty data"),
+			wantErr:        expectError("attest: AttStmt: empty data"),
 		},
 		"x5c chain too short": {
 			rootCA:     rootCA,
@@ -487,7 +487,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("x5c chain must contain credential and intermediate certificates"),
+			wantErr:        expectError("attest: x5c chain must contain credential and intermediate certificates"),
 		},
 		"credential cert malformed DER": {
 			rootCA:     rootCA,
@@ -502,7 +502,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("parsing certificate from ASN.1 data failed"),
+			wantErr:        expectError("attest: parsing certificate from ASN.1 data failed"),
 		},
 		"intermediate cert malformed DER": {
 			rootCA:     rootCA,
@@ -517,7 +517,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("parsing intermediate certificate at index 1 failed"),
+			wantErr:        expectError("attest: parsing intermediate certificate at index 1 failed"),
 		},
 		"certificate expired": {
 			rootCA:     rootCA,
@@ -533,7 +533,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("expired"),
+			wantErr:        expectError("attest: invalid certificate"),
 		},
 		"missing credCert extension": {
 			rootCA:     rootCA,
@@ -549,7 +549,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("certificate didn't contain credCert extension"),
+			wantErr:        expectError("attest: certificate didn't contain credCert extension"),
 		},
 		"wrong client data hash (nonce mismatch)": {
 			rootCA:     rootCA,
@@ -564,7 +564,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: wrongClientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("credCert extension does not match nonce"),
+			wantErr:        expectError("attest: credCert extension does not match nonce"),
 		},
 		"wrong keyID": {
 			rootCA:     rootCA,
@@ -579,7 +579,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          wrongKeyID[:],
-			wantErr:        expectError("the keyid is not match public key's hash"),
+			wantErr:        expectError("attest: the keyid is not match public key's hash"),
 		},
 		"authData too short": {
 			rootCA:     rootCA,
@@ -594,7 +594,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("authenticator data decoding failed"),
+			wantErr:        expectError("attest: authenticator data decoding failed"),
 		},
 		"missing attested credential data flag": {
 			rootCA:     rootCA,
@@ -609,7 +609,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("authenticator data decoding failed: failed to read AAGUID: unexpected EOF"),
+			wantErr:        expectError("attest: authenticator data decoding failed: failed to read AAGUID: unexpected EOF"),
 		},
 		"wrong appID (RPIDHash mismatch)": {
 			rootCA:     rootCA,
@@ -639,7 +639,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("authenticator data counter was not 0"),
+			wantErr:        expectError("attest: authenticator data counter was not 0"),
 		},
 		"invalid aaguid": {
 			rootCA:     rootCA,
@@ -654,7 +654,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("invalid aaguid value"),
+			wantErr:        expectError("attest: invalid aaguid value"),
 		},
 		"credential ID mismatch": {
 			rootCA:     rootCA,
@@ -669,7 +669,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("credential ID did not equal the provided key identifier"),
+			wantErr:        expectError("attest: credential ID did not equal the provided key identifier"),
 		},
 		"corrupted credCert extension (invalid ASN.1)": {
 			rootCA:     rootCA,
@@ -685,7 +685,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("credCert extension: parse sequence"),
+			wantErr:        expectError("attest: credCert extension: parse sequence"),
 		},
 		"certificate not yet valid": {
 			rootCA:     rootCA,
@@ -701,7 +701,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("expired or is not yet valid"),
+			wantErr:        expectError("attest: invalid certificate"),
 		},
 		"untrusted root (different CA)": {
 			rootCA:     otherRootCA, // chain is valid, but the trusted root is a different CA
@@ -716,7 +716,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("unknown authority"),
+			wantErr:        expectError("attest: invalid certificate"),
 		},
 		"intermediate certificate missing": {
 			rootCA:     rootCA,
@@ -731,7 +731,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("unknown authority"),
+			wantErr:        expectError("attest: invalid certificate"),
 		},
 		"missing extensions (no apple_bundle_version_01 / apple_validation_category_01)": {
 			rootCA:     rootCA,
@@ -767,7 +767,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("invalid key algorithm"),
+			wantErr:        expectError("attest: invalid key algorithm"),
 		},
 		"empty clientDataHash": {
 			rootCA:     rootCA,
@@ -782,7 +782,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: []byte{},
 			keyID:          keyID[:],
-			wantErr:        expectError("credCert extension does not match nonce"),
+			wantErr:        expectError("attest: credCert extension does not match nonce"),
 		},
 		"short clientDataHash": {
 			rootCA:     rootCA,
@@ -797,7 +797,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: make([]byte, 31),
 			keyID:          keyID[:],
-			wantErr:        expectError("credCert extension does not match nonce"),
+			wantErr:        expectError("attest: credCert extension does not match nonce"),
 		},
 		"macOS: missing aclBlob": {
 			platform:   macOS,
@@ -814,7 +814,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("certificate didn't contain aclBlob extension"),
+			wantErr:        expectError("attest: certificate didn't contain aclBlob extension"),
 		},
 		"macOS: aclBlob mismatch": {
 			platform:   macOS,
@@ -831,7 +831,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("aclBlob does not match expected value"),
+			wantErr:        expectError("attest: aclBlob does not match expected value"),
 		},
 		"macOS: corrupted aclBlob (invalid ASN.1)": {
 			platform:   macOS,
@@ -848,7 +848,7 @@ func TestAttestationService_Verify(t *testing.T) {
 			},
 			clientDataHash: clientDataHash[:],
 			keyID:          keyID[:],
-			wantErr:        expectError("aclBlob extension: parse sequence"),
+			wantErr:        expectError("attest: aclBlob extension: parse sequence"),
 		},
 	}
 
@@ -972,35 +972,35 @@ func TestAttestationObject_UnmarshalCBOR(t *testing.T) {
 		},
 		"empty data": {
 			data:    []byte{},
-			wantErr: expectError(io.ErrUnexpectedEOF),
+			wantErr: expectError("attest: ", io.ErrUnexpectedEOF),
 		},
 		"not a map": {
 			data:    cborUint(1),
-			wantErr: expectError(fmt.Sprintf("expected CBOR type Map (major type 5) for AttestationObject, got major type %d", cbor.UnsignedInt)),
+			wantErr: expectError(fmt.Sprintf("attest: expected CBOR type Map (major type 5) for AttestationObject, got major type %d", cbor.UnsignedInt)),
 		},
 		"map key not text": {
 			data: cborMap(
 				item{cborUint(1), cborText("apple-appattest")},
 			),
-			wantErr: expectError(fmt.Sprintf("expected string map key at index %d, got major type %d", 0, cbor.UnsignedInt)),
+			wantErr: expectError(fmt.Sprintf("attest: expected string map key at index %d, got major type %d", 0, cbor.UnsignedInt)),
 		},
 		"fmt wrong value type": {
 			data: cborMap(
 				item{cborText("fmt"), cborUint(1)},
 			),
-			wantErr: expectError(fmt.Sprintf(`expected string for format (key "fmt"), got major type %d`, cbor.UnsignedInt)),
+			wantErr: expectError(fmt.Sprintf(`attest: expected string for format (key "fmt"), got major type %d`, cbor.UnsignedInt)),
 		},
 		"authData wrong value type": {
 			data: cborMap(
 				item{cborText("authData"), cborText("not-bytes")},
 			),
-			wantErr: expectError(fmt.Sprintf(`expected bytestring for authData (key "authData"), got major type %d`, cbor.TextString)),
+			wantErr: expectError(fmt.Sprintf(`attest: expected bytestring for authData (key "authData"), got major type %d`, cbor.TextString)),
 		},
 		"attStmt not a map": {
 			data: cborMap(
 				item{cborText("attStmt"), cborUint(1)},
 			),
-			wantErr: expectError(fmt.Sprintf(`failed to unmarshal attStmt (key "attStmt"): expected CBOR type Map (major type 5) for attStmt, got major type %d`, cbor.UnsignedInt)),
+			wantErr: expectError(fmt.Sprintf(`attest: failed to unmarshal attStmt (key "attStmt"): expected CBOR type Map (major type 5) for attStmt, got major type %d`, cbor.UnsignedInt)),
 		},
 		"unknown top-level key": {
 			data: cborMap(

@@ -187,7 +187,7 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 			),
 			appID:   "com.example.app",
 			pubkey:  &correctKey.PublicKey,
-			wantErr: expectError("invalid receipt creation time delta="),
+			wantErr: expectError("receipt: invalid receipt creation time delta="),
 		},
 		"creation time in the future": {
 			certPool: rootCA,
@@ -213,14 +213,14 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 			data:     validData,
 			appID:    "other.bundle.id",
 			pubkey:   &correctKey.PublicKey,
-			wantErr:  expectError("app id mismatch"),
+			wantErr:  expectError("receipt: app id mismatch"),
 		},
 		"public key mismatch": {
 			certPool: rootCA,
 			data:     validData,
 			appID:    "com.example.app",
 			pubkey:   &otherKey.PublicKey, // does not match attested cert (field 3)
-			wantErr:  expectError("attested public key mismatch"),
+			wantErr:  expectError("receipt: attested public key mismatch"),
 		},
 		"missing attested public key (field 3)": {
 			certPool: rootCA,
@@ -232,7 +232,7 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 			),
 			appID:   "com.example.app",
 			pubkey:  &correctKey.PublicKey,
-			wantErr: expectError("attested public key missing (field 3)"),
+			wantErr: expectError("receipt: attested public key missing (field 3)"),
 		},
 		"invalid receipt type": {
 			certPool: rootCA,
@@ -245,7 +245,7 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 			),
 			appID:   "com.example.app",
 			pubkey:  &correctKey.PublicKey,
-			wantErr: expectError("invalid receipt type (field 6)"),
+			wantErr: expectError("receipt: invalid receipt type (field 6)"),
 		},
 		"tampered signature": {
 			certPool: rootCA,
@@ -258,35 +258,35 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 			)),
 			appID:   "com.example.app",
 			pubkey:  &correctKey.PublicKey,
-			wantErr: expectError("signature verification failed"),
+			wantErr: expectError("receipt: signature verification failed"),
 		},
 		"untrusted root": {
 			certPool: newTestPKI(t).certPool(), // untrusted root
 			data:     validData,
 			appID:    "com.example.app",
 			pubkey:   &correctKey.PublicKey,
-			wantErr:  expectError("signature verification failed"),
+			wantErr:  expectError("receipt: signature verification failed"),
 		},
 		"nil root cert pool": {
 			certPool: nil,
 			data:     validData,
 			appID:    "com.example.app",
 			pubkey:   &correctKey.PublicKey,
-			wantErr:  expectError("RootCertPool is nil"),
+			wantErr:  expectError("receipt: verifier is not initialized: RootCertPool is nil"),
 		},
 		"nil public key": {
 			certPool: rootCA,
 			data:     validData,
 			appID:    "com.example.app",
 			pubkey:   nil,
-			wantErr:  expectError("expected public key is nil"),
+			wantErr:  expectError("receipt: expected public key is nil"),
 		},
 		"malformed PKCS7 container": {
 			certPool: rootCA,
 			data:     []byte("not a valid pkcs7 der structure"),
 			appID:    "com.example.app",
 			pubkey:   &correctKey.PublicKey,
-			wantErr:  expectError("failed to parse PKCS#7"),
+			wantErr:  expectError("receipt: failed to parse PKCS#7"),
 		},
 		"RECEIPT without risk metric (field 17)": {
 			certPool: rootCA,
@@ -298,7 +298,7 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 			),
 			appID:   "com.example.app",
 			pubkey:  &correctKey.PublicKey,
-			wantErr: expectError("risk metric missing (field 17)"),
+			wantErr: expectError("receipt: risk metric missing (field 17)"),
 		},
 		"ATTEST without risk metric is valid": {
 			certPool: rootCA,
@@ -326,7 +326,7 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 			),
 			appID:   "com.example.app",
 			pubkey:  &correctKey.PublicKey,
-			wantErr: expectError("invalid receipt type (field 6)"),
+			wantErr: expectError("receipt: invalid receipt type (field 6)"),
 		},
 		"MaxAge longer than default (10m): 7m old accepted": {
 			certPool: rootCA,
@@ -380,17 +380,17 @@ func TestReceiptVerifier_Verify(t *testing.T) {
 			),
 			appID:   "com.example.app",
 			pubkey:  &correctKey.PublicKey,
-			wantErr: expectError("invalid receipt creation time delta="),
+			wantErr: expectError("receipt: invalid receipt creation time delta="),
 		},
 	}
 	// Cases where the legacy ParseAndVerify+Validate path differs from Verify.
 	legacy := map[string]*wantError{
-		"invalid receipt type":                              expectError("invalid receipt type"),
-		"creation time in the future":                       expectError("invalid receipt creation time delta="),
+		"invalid receipt type":                              expectError("receipt: invalid receipt type"),
+		"creation time in the future":                       expectError("receipt: invalid receipt creation time delta="),
 		"RECEIPT without risk metric (field 17)":            nil, // Validate does not check field 17
-		"missing receipt type (field 6)":                    expectError("invalid receipt type"),
+		"missing receipt type (field 6)":                    expectError("receipt: invalid receipt type"),
 		"MaxAge shorter than age (30s): rejected":           nil, // legacy path ignores ReceiptVerifier.MaxAge
-		"MaxAge longer than default (10m): 7m old accepted": expectError("invalid receipt creation time delta="),
+		"MaxAge longer than default (10m): 7m old accepted": expectError("receipt: invalid receipt creation time delta="),
 	}
 
 	for name, tt := range tests {
@@ -500,31 +500,31 @@ func TestReceipt_Unmarshal(t *testing.T) {
 			attributes: []receipt.Attribute{
 				{Type: 12, Raw: mustASN1OctetString([]byte("invalid-time")).Raw},
 			},
-			wantErr: expectError("failed to unmarshal Creation Time (field:12): parse RFC3339 "),
+			wantErr: expectError("receipt: failed to unmarshal: failed to unmarshal Creation Time (field:12): parse RFC3339 "),
 		},
 		"InvalidRiskMetric": {
 			attributes: []receipt.Attribute{
 				{Type: 17, Raw: mustASN1OctetString([]byte("NaN")).Raw},
 			},
-			wantErr: expectError("failed to parse RiskMetric string value"),
+			wantErr: expectError("receipt: failed to unmarshal: failed to parse RiskMetric string value"),
 		},
 		"InvalidAppIDEncoding": {
 			attributes: []receipt.Attribute{
 				{Type: 2, Raw: asn1.RawValue{FullBytes: []byte{0x02, 0x01, 0x05}}}, // INTEGER, not OCTET STRING
 			},
-			wantErr: expectError("failed to unmarshal AppID"),
+			wantErr: expectError("receipt: failed to unmarshal: failed to unmarshal AppID"),
 		},
 		"InvalidReceiptTypeEncoding": {
 			attributes: []receipt.Attribute{
 				{Type: 6, Raw: asn1.RawValue{FullBytes: []byte{0x02, 0x01, 0x05}}},
 			},
-			wantErr: expectError("failed to unmarshal Receipt Type"),
+			wantErr: expectError("receipt: failed to unmarshal: failed to unmarshal Receipt Type"),
 		},
 		"InvalidAttestedCertEncoding": {
 			attributes: []receipt.Attribute{
 				{Type: 3, Raw: asn1.RawValue{FullBytes: []byte{0x02, 0x01, 0x05}}},
 			},
-			wantErr: expectError("failed to unmarshal Attested Public Key"),
+			wantErr: expectError("receipt: failed to unmarshal: failed to unmarshal Attested Public Key"),
 		},
 	}
 

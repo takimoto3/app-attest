@@ -215,34 +215,34 @@ func (service *AttestationService) Verify(attestObj *AttestationObject, clientDa
 
 func (service *AttestationService) verify(platform Platform, attestObj *AttestationObject, identifier string, clientDataHash, keyID []byte, opts ...verifyOption) (*Result, error) {
 	if service.RootCertPool == nil {
-		return nil, errors.New("root certificate pool is nil")
+		return nil, errors.New("attest: root certificate pool is nil")
 	}
 	if attestObj == nil {
-		return nil, errors.New("attestObj is nil")
+		return nil, errors.New("attest: attestObj is nil")
 	}
 	if attestObj.Format != "apple-appattest" {
-		return nil, fmt.Errorf("invalid attestation format: %q", attestObj.Format)
+		return nil, fmt.Errorf("attest: invalid attestation format: %q", attestObj.Format)
 	}
 	if len(attestObj.AuthData) == 0 {
-		return nil, errors.New("authData: empty data")
+		return nil, errors.New("attest: authData: empty data")
 	}
 	if len(attestObj.AttStmt.X5C) == 0 {
-		return nil, errors.New("AttStmt: empty data")
+		return nil, errors.New("attest: AttStmt: empty data")
 	}
 	intermediates := x509.NewCertPool()
 
 	x5chain := attestObj.AttStmt.X5C
 	if len(x5chain) < 2 {
-		return nil, errors.New("x5c chain must contain credential and intermediate certificates")
+		return nil, errors.New("attest: x5c chain must contain credential and intermediate certificates")
 	}
 	credCert, err := x509.ParseCertificate(x5chain[0])
 	if err != nil {
-		return nil, fmt.Errorf("parsing certificate from ASN.1 data failed: %w", err)
+		return nil, fmt.Errorf("attest: parsing certificate from ASN.1 data failed: %w", err)
 	}
 	for i, certDER := range x5chain[1:] {
 		cert, err := x509.ParseCertificate(certDER)
 		if err != nil {
-			return nil, fmt.Errorf("parsing intermediate certificate at index %d failed: %w", i+1, err)
+			return nil, fmt.Errorf("attest: parsing intermediate certificate at index %d failed: %w", i+1, err)
 		}
 		intermediates.AddCert(cert)
 	}
@@ -252,7 +252,7 @@ func (service *AttestationService) verify(platform Platform, attestObj *Attestat
 	//  Verify the validity of the certificates using Apple’s App Attest root certificate.
 	err = verifyCredentialCertificate(credCert, service.RootCertPool, intermediates, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("invalid certificate: %w", err)
+		return nil, fmt.Errorf("attest: invalid certificate: %w", err)
 	}
 
 	// 2-9. The chain is trusted at this point; verify the remaining claims.
@@ -304,49 +304,49 @@ func verifyAttestationClaims(platform Platform, attestObj *AttestationObject, cr
 		}
 	}
 	if len(credCertExtension) == 0 {
-		return nil, fmt.Errorf("certificate didn't contain credCert extension")
+		return nil, fmt.Errorf("attest: certificate didn't contain credCert extension")
 	}
 	credCertNonce, err := extractOctetString(credCertExtension)
 	if err != nil {
-		return nil, fmt.Errorf("credCert extension: %w", err)
+		return nil, fmt.Errorf("attest: credCert extension: %w", err)
 	}
 	if !bytes.Equal(nonce, credCertNonce) {
-		return nil, fmt.Errorf("credCert extension does not match nonce")
+		return nil, fmt.Errorf("attest: credCert extension does not match nonce")
 	}
 
 	// for macOS
 	if platform == macOS {
 		// aclBlob Extension
 		if len(aclBlobExtension) == 0 {
-			return nil, fmt.Errorf("certificate didn't contain aclBlob extension")
+			return nil, fmt.Errorf("attest: certificate didn't contain aclBlob extension")
 		}
 		aclBlob, err := extractOctetString(aclBlobExtension)
 		if err != nil {
-			return nil, fmt.Errorf("aclBlob extension: %w", err)
+			return nil, fmt.Errorf("attest: aclBlob extension: %w", err)
 		}
 		if !bytes.Equal(expectedACL, aclBlob) {
-			return nil, fmt.Errorf("aclBlob does not match expected value")
+			return nil, fmt.Errorf("attest: aclBlob does not match expected value")
 		}
 	}
 
 	// 5. Create the SHA256 hash of the public key in credCert, and verify that it matches the key identifier from your app.
 	pubkey, ok := credCert.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("invalid key algorithm")
+		return nil, fmt.Errorf("attest: invalid key algorithm")
 	}
 	pubkeyBytes, err := pubkey.Bytes()
 	if err != nil {
-		return nil, fmt.Errorf("invalid ecdsa public key: %w", err)
+		return nil, fmt.Errorf("attest: invalid ecdsa public key: %w", err)
 	}
 	pubkeyHash := sha256.Sum256(pubkeyBytes)
 	if !bytes.Equal(pubkeyHash[:], keyID) {
-		return nil, fmt.Errorf("the keyid is not match public key's hash")
+		return nil, fmt.Errorf("attest: the keyid is not match public key's hash")
 	}
 
 	// prepare AuthenticatorData
 	authData := AuthenticatorData{}
 	if err = authData.Unmarshal(attestObj.AuthData, true); err != nil {
-		return nil, fmt.Errorf("authenticator data decoding failed: %w", err)
+		return nil, fmt.Errorf("attest: authenticator data decoding failed: %w", err)
 	}
 
 	// 6. Compute the SHA256 hash of your app’s App ID, and verify that this is the same as the authenticator data’s RP ID hash.
@@ -357,7 +357,7 @@ func verifyAttestationClaims(platform Platform, attestObj *AttestationObject, cr
 
 	// 7. Verify that the authenticator data’s counter field equals 0.
 	if authData.Counter != 0 {
-		return nil, fmt.Errorf("authenticator data counter was not 0, received: %d", authData.Counter)
+		return nil, fmt.Errorf("attest: authenticator data counter was not 0, received: %d", authData.Counter)
 	}
 
 	// 8. Verify that the authenticator data’s aaguid field is either appattestdevelop if operating in the development environment,
@@ -370,12 +370,12 @@ func verifyAttestationClaims(platform Platform, attestObj *AttestationObject, cr
 	case "appattestdevelop", "appattestsandbox":
 		env = Development
 	default:
-		return nil, fmt.Errorf("invalid aaguid value")
+		return nil, fmt.Errorf("attest: invalid aaguid value")
 	}
 
 	// 9. Verify that the authenticator data’s credentialId field is the same as the key identifier.
 	if !bytes.Equal(authData.CredentialData.CredentialID, keyID) {
-		return nil, fmt.Errorf("credential ID did not equal the provided key identifier")
+		return nil, fmt.Errorf("attest: credential ID did not equal the provided key identifier")
 	}
 
 	return &Result{
@@ -421,26 +421,26 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 	dec := cbor.NewDecoder(data)
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
-		return fmt.Errorf("failed to read CBOR map header: %w", err)
+		return fmt.Errorf("attest: failed to read CBOR map header: %w", err)
 	}
 	if mt != cbor.Map {
-		return fmt.Errorf("expected CBOR type Map (major type 5) for AttestationObject, got major type %d", mt)
+		return fmt.Errorf("attest: expected CBOR type Map (major type 5) for AttestationObject, got major type %d", mt)
 	}
 	size, err := dec.ReadAdditional(ai)
 	if err != nil {
-		return fmt.Errorf("failed to read CBOR map size: %w", err)
+		return fmt.Errorf("attest: failed to read CBOR map size: %w", err)
 	}
 	for i := range size {
 		mt, ai, err = dec.ReadHeader()
 		if err != nil {
-			return fmt.Errorf("failed to read map key header at index %d: %w", i, err)
+			return fmt.Errorf("attest: failed to read map key header at index %d: %w", i, err)
 		}
 		if mt != cbor.TextString {
-			return fmt.Errorf("expected string map key at index %d, got major type %d", i, mt)
+			return fmt.Errorf("attest: expected string map key at index %d, got major type %d", i, mt)
 		}
 		key, err := dec.ReadUnsafeTextString(ai)
 		if err != nil {
-			return fmt.Errorf("failed to read map key string at index %d: %w", i, err)
+			return fmt.Errorf("attest: failed to read map key string at index %d: %w", i, err)
 		}
 		switch key {
 		case "fmt":
@@ -450,14 +450,14 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 			gotKeys |= cborAttestFmt
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return fmt.Errorf(`failed to read map value header (key "fmt") at index %d: %w`, i, err)
+				return fmt.Errorf(`attest: failed to read map value header (key "fmt") at index %d: %w`, i, err)
 			}
 			if mt != cbor.TextString {
-				return fmt.Errorf(`expected string for format (key "fmt"), got major type %d`, mt)
+				return fmt.Errorf(`attest: expected string for format (key "fmt"), got major type %d`, mt)
 			}
 			val, err := dec.ReadTextString(ai)
 			if err != nil {
-				return fmt.Errorf(`failed to read format string (key "fmt"): %w`, err)
+				return fmt.Errorf(`attest: failed to read format string (key "fmt"): %w`, err)
 			}
 			ao.Format = val
 		case "authData":
@@ -467,14 +467,14 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 			gotKeys |= cborAttestAuthData
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return fmt.Errorf(`failed to read map value header (key "authData") at index %d: %w`, i, err)
+				return fmt.Errorf(`attest: failed to read map value header (key "authData") at index %d: %w`, i, err)
 			}
 			if mt != cbor.ByteString {
-				return fmt.Errorf(`expected bytestring for authData (key "authData"), got major type %d`, mt)
+				return fmt.Errorf(`attest: expected bytestring for authData (key "authData"), got major type %d`, mt)
 			}
 			val, err := dec.ReadByteString(ai)
 			if err != nil {
-				return fmt.Errorf(`failed to read authData bytes (key "authData"): %w`, err)
+				return fmt.Errorf(`attest: failed to read authData bytes (key "authData"): %w`, err)
 			}
 			ao.AuthData = val
 		case "attStmt":
@@ -484,7 +484,7 @@ func (ao *AttestationObject) UnmarshalCBOR(data []byte) error {
 			gotKeys |= cborAttestStmt
 			stmt := AttStmt{}
 			if err = stmt.UnmarshalCBOR(dec); err != nil {
-				return fmt.Errorf(`failed to unmarshal attStmt (key "attStmt"): %w`, err)
+				return fmt.Errorf(`attest: failed to unmarshal attStmt (key "attStmt"): %w`, err)
 			}
 			ao.AttStmt = stmt
 		default:
