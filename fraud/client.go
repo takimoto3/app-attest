@@ -135,7 +135,7 @@ func NewClientFromInitializer(initializer appleapi.HTTPClientInitializer, tp tok
 	}
 	c, err := appleapi.NewClient(initializer, ProductionHost, tp, apiOpts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fraud: initialize client: %w", err)
 	}
 
 	if c.Development {

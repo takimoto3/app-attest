@@ -69,7 +69,7 @@ func (d *Decoder) Len() int {
 // The major type indicates the data kind, and the additional info encodes length or value hints.
 func (d *Decoder) ReadHeader() (mt MajorType, ai byte, err error) {
 	if d.pos >= len(d.data) {
-		return 0, 0, io.ErrUnexpectedEOF
+		return 0, 0, fmt.Errorf("cbor: %w", io.ErrUnexpectedEOF)
 	}
 	b := d.data[d.pos]
 	d.pos++
@@ -87,7 +87,7 @@ func (d *Decoder) ReadAdditional(ai byte) (uint64, error) {
 		return uint64(ai), nil
 	case ai == 24:
 		if d.pos >= len(d.data) {
-			return 0, io.ErrUnexpectedEOF
+			return 0, fmt.Errorf("cbor: %w", io.ErrUnexpectedEOF)
 		}
 		v := d.data[d.pos]
 		d.pos++
@@ -95,19 +95,19 @@ func (d *Decoder) ReadAdditional(ai byte) (uint64, error) {
 	case ai == 25:
 		b, err := d.readN(2)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("cbor: %w", err)
 		}
 		return uint64(binary.BigEndian.Uint16(b)), nil
 	case ai == 26:
 		b, err := d.readN(4)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("cbor: %w", err)
 		}
 		return uint64(binary.BigEndian.Uint32(b)), nil
 	case ai == 27:
 		b, err := d.readN(8)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("cbor: %w", err)
 		}
 		return binary.BigEndian.Uint64(b), nil
 	default:
@@ -145,7 +145,7 @@ func (d *Decoder) ReadByteString(ai byte) ([]byte, error) {
 	}
 	b, err := d.readN(length)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cbor: %w", err)
 	}
 	return b, nil
 }

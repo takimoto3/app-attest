@@ -82,7 +82,7 @@ func (v *ReceiptVerifier) Verify(encoded []byte, appID string, pubkey *ecdsa.Pub
 // Deprecated: use Verify.
 func (v *ReceiptVerifier) ParseAndVerify(encoded []byte) (*Receipt, error) {
 	if v.RootCertPool == nil {
-		return nil, errors.New("verifier is not initialized: RootCertPool is nil")
+		return nil, errors.New("receipt: verifier is not initialized: RootCertPool is nil")
 	}
 	if len(encoded) == 0 {
 		return nil, errors.New("receipt: encoded receipt is empty")
@@ -90,18 +90,18 @@ func (v *ReceiptVerifier) ParseAndVerify(encoded []byte) (*Receipt, error) {
 
 	p7, err := pkcs7.Parse(encoded)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse PKCS#7: %w", err)
+		return nil, fmt.Errorf("receipt: failed to parse PKCS#7: %w", err)
 	}
 	if err := p7.VerifyWithChain(v.RootCertPool); err != nil {
-		return nil, fmt.Errorf("signature verification failed: %w", err)
+		return nil, fmt.Errorf("receipt: signature verification failed: %w", err)
 	}
 	if p7.Content == nil {
-		return nil, errors.New("missing PKCS#7 content")
+		return nil, errors.New("receipt: missing PKCS#7 content")
 	}
 
 	var attributes []Attribute
 	if _, err := asn1.UnmarshalWithParams(p7.Content, &attributes, "set"); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal ASN.1 payload: %w", err)
+		return nil, fmt.Errorf("receipt: failed to unmarshal ASN.1 payload: %w", err)
 	}
 
 	receipt := Receipt{MaxAge: defaultMaxAge}
@@ -113,61 +113,61 @@ func (v *ReceiptVerifier) ParseAndVerify(encoded []byte) (*Receipt, error) {
 
 func (v *ReceiptVerifier) verify(encoded []byte, appID string, pubkey *ecdsa.PublicKey) (*Receipt, error) {
 	if v.RootCertPool == nil {
-		return nil, errors.New("verifier is not initialized: RootCertPool is nil")
+		return nil, errors.New("receipt: verifier is not initialized: RootCertPool is nil")
 	}
 	p7data, err := pkcs7.Parse(encoded)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse PKCS#7: %w", err)
+		return nil, fmt.Errorf("receipt: failed to parse PKCS#7: %w", err)
 	}
 
 	// Apple "Assessing fraud risk" — Verify the receipt:
 	// 1. Verify the signature.
 	// 2. Evalutate the trustworthiness of the signing certificate up to the Apple public root certificate for App Attest.
 	if err := p7data.VerifyWithChain(v.RootCertPool); err != nil {
-		return nil, fmt.Errorf("signature verification failed: %w", err)
+		return nil, fmt.Errorf("receipt: signature verification failed: %w", err)
 	}
 	if p7data.Content == nil {
-		return nil, errors.New("missing PKCS#7 content")
+		return nil, errors.New("receipt: missing PKCS#7 content")
 	}
 
 	// 3. Parse the ASN.1 structure that makes up the payload.
 	var attributes []Attribute
 	if _, err := asn1.UnmarshalWithParams(p7data.Content, &attributes, "set"); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal ASN.1 payload: %w", err)
+		return nil, fmt.Errorf("receipt: failed to unmarshal ASN.1 payload: %w", err)
 	}
 
 	receipt := Receipt{MaxAge: defaultMaxAge}
 	hasRiskMetric, err := receipt.unmarshal(attributes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("receipt: failed to unmarshal: %w", err)
 	}
 	if receipt.Type != "ATTEST" && receipt.Type != "RECEIPT" {
-		return nil, fmt.Errorf("invalid receipt type (field 6): %q", receipt.Type)
+		return nil, fmt.Errorf("receipt: invalid receipt type (field 6): %q", receipt.Type)
 	}
 	if receipt.Type == "RECEIPT" && !hasRiskMetric {
-		return nil, errors.New("risk metric missing (field 17) in RECEIPT")
+		return nil, errors.New("receipt: risk metric missing (field 17) in RECEIPT")
 	}
 
 	// 4. Verify that the receipt contains the App ID of your app in field 2.
 	// Your app’s App ID is the concatenation of your 10-digit Team ID, a period, and the app’s bundle ID.
 	if receipt.AppID != appID {
-		return nil, fmt.Errorf("app id mismatch: got %q, want %q", receipt.AppID, appID)
+		return nil, fmt.Errorf("receipt: app id mismatch: got %q, want %q", receipt.AppID, appID)
 	}
 
 	// 5. Verify that the receipt’s creation time, given in field 12,
 	// is no more than five minutes old. This helps to thwart replay attacks.
 	delta := time.Since(receipt.CreationTime)
 	if delta > v.maxAge() {
-		return nil, fmt.Errorf("invalid receipt creation time delta=%s (allowed 0–%s)", delta, v.maxAge())
+		return nil, fmt.Errorf("receipt: invalid receipt creation time delta=%s (allowed 0–%s)", delta, v.maxAge())
 	}
 
 	// 6. Verify that the attested public key in field 3, encoded as a DER ASN.1 object,
 	// matches the one you stored after initial attestation.
 	if receipt.PublicKey == nil {
-		return nil, errors.New("attested public key missing (field 3)")
+		return nil, errors.New("receipt: attested public key missing (field 3)")
 	}
 	if !receipt.PublicKey.Equal(pubkey) {
-		return nil, errors.New("attested public key mismatch (field 3)")
+		return nil, errors.New("receipt: attested public key mismatch (field 3)")
 	}
 
 	return &receipt, nil
@@ -205,7 +205,10 @@ type Receipt struct {
 // Unmarshal populates the Receipt fields from ASN.1 attributes.
 func (r *Receipt) Unmarshal(attributes []Attribute) error {
 	_, err := r.unmarshal(attributes)
-	return err
+	if err != nil {
+		return fmt.Errorf("receipt: failed to unmarshal: %w", err)
+	}
+	return nil
 }
 
 // unmarshal populates r from attributes. The returned bool reports whether
@@ -286,24 +289,24 @@ func (r *Receipt) unmarshal(attributes []Attribute) (bool, error) {
 // validates the receipt in one call.
 func (r *Receipt) Validate(appID string, publicKey *ecdsa.PublicKey) error {
 	if r.AppID != appID {
-		return fmt.Errorf("app id mismatch: got %q, want %q", r.AppID, appID)
+		return fmt.Errorf("receipt: app id mismatch: got %q, want %q", r.AppID, appID)
 	}
 	if publicKey == nil {
-		return errors.New("expected public key is nil")
+		return errors.New("receipt: expected public key is nil")
 	}
 	if r.PublicKey == nil {
-		return errors.New("attested public key missing (field 3)")
+		return errors.New("receipt: attested public key missing (field 3)")
 	}
 	if !r.PublicKey.Equal(publicKey) {
-		return errors.New("attested public key mismatch (field 3)")
+		return errors.New("receipt: attested public key mismatch (field 3)")
 	}
 	if r.Type != "ATTEST" && r.Type != "RECEIPT" {
-		return fmt.Errorf("invalid receipt type (field 6): %q", r.Type)
+		return fmt.Errorf("receipt: invalid receipt type (field 6): %q", r.Type)
 	}
 
 	delta := time.Since(r.CreationTime)
 	if delta < 0 || delta > r.MaxAge {
-		return fmt.Errorf("invalid receipt creation time delta=%s (allowed 0–%s)", delta, r.MaxAge)
+		return fmt.Errorf("receipt: invalid receipt creation time delta=%s (allowed 0–%s)", delta, r.MaxAge)
 	}
 	return nil
 }

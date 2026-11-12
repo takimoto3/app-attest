@@ -117,7 +117,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				OriginalChallenge: "example_server_challenge",
 				Counter:           0,
 			},
-			wantErr: expectError("assertion object is nil"),
+			wantErr: expectError("attest: assertion object is nil"),
 		},
 		"error: empty AppID": {
 			assertionObj: assertionObj,
@@ -129,7 +129,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				OriginalChallenge: "example_server_challenge",
 				Counter:           0,
 			},
-			wantErr: expectError("assertion state: AppID is empty"),
+			wantErr: expectError("attest: assertion state: AppID is empty"),
 		},
 		"error: public key is nil": {
 			assertionObj: assertionObj,
@@ -140,7 +140,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				OriginalChallenge: "example_server_challenge",
 				Counter:           0,
 			},
-			wantErr: expectError("assertion state: PublicKey is nil or incomplete"),
+			wantErr: expectError("attest: assertion state: PublicKey is nil or incomplete"),
 		},
 		"error: public key has nil curve": {
 			assertionObj: assertionObj,
@@ -152,7 +152,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey:         &ecdsa.PublicKey{X: key.PublicKey.X, Y: key.PublicKey.Y},
 				Counter:           0,
 			},
-			wantErr: expectError("assertion state: PublicKey is nil or incomplete"),
+			wantErr: expectError("attest: assertion state: PublicKey is nil or incomplete"),
 		},
 		"error: public key has nil X": {
 			assertionObj: assertionObj,
@@ -163,7 +163,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey:         &ecdsa.PublicKey{Curve: key.PublicKey.Curve, Y: key.PublicKey.Y},
 				OriginalChallenge: challenge,
 			},
-			wantErr: expectError("PublicKey is nil or incomplete"),
+			wantErr: expectError("attest: assertion state: PublicKey is nil or incomplete"),
 		},
 		"error: public key has nil Y": {
 			assertionObj: assertionObj,
@@ -174,7 +174,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey:         &ecdsa.PublicKey{Curve: key.PublicKey.Curve, X: key.PublicKey.X},
 				OriginalChallenge: challenge,
 			},
-			wantErr: expectError("PublicKey is nil or incomplete"),
+			wantErr: expectError("attest: assertion state: PublicKey is nil or incomplete"),
 		},
 		"error: signature is nil": {
 			assertionObj: &attest.AssertionObject{Signature: nil, AuthData: assertionObj.AuthData},
@@ -281,7 +281,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				OriginalChallenge: "example_server_challenge",
 				Counter:           0,
 			},
-			wantErr: expectError("authenticator data length too short"),
+			wantErr: expectError("attest: authenticator data decoding failed: authenticator data length too short"),
 		},
 		"error: authData has invalid extensions": {
 			assertionObj: newAssertionObj(t, key,
@@ -295,7 +295,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				OriginalChallenge: "example_server_challenge",
 				Counter:           0,
 			},
-			wantErr: expectError("failed to parse extensions"),
+			wantErr: expectError("attest: authenticator data decoding failed: failed to parse extensions"),
 		},
 		"error: app ID mismatch": {
 			assertionObj: assertionObj,
@@ -331,7 +331,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				OriginalChallenge: challenge,
 				Counter:           1, // Same as the counter in authData
 			},
-			wantErr: expectError("counter was not greater than previous"),
+			wantErr: expectError("attest: counter was not greater than previous"),
 		},
 		"error: counter is less than previous": {
 			assertionObj: assertionObj,
@@ -343,7 +343,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				OriginalChallenge: challenge,
 				Counter:           5, // Greater than the counter in authData
 			},
-			wantErr: expectError("counter was not greater than previous"),
+			wantErr: expectError("attest: counter was not greater than previous"),
 		},
 		"error: counter is zero on first assertion": {
 			assertionObj: newAssertionObj(t, key,
@@ -357,7 +357,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				OriginalChallenge: challenge,
 				Counter:           0,
 			},
-			wantErr: expectError("counter was not greater than previous"),
+			wantErr: expectError("attest: counter was not greater than previous"),
 		},
 		"error: challenge mismatch": {
 			assertionObj: assertionObj,
@@ -368,7 +368,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey:         &key.PublicKey,
 				OriginalChallenge: challenge,
 			},
-			wantErr: expectError("invalid challenge"),
+			wantErr: expectError("attest: invalid challenge"),
 		},
 		"error: challenge is empty": {
 			assertionObj: assertionObj,
@@ -379,7 +379,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey:         &key.PublicKey,
 				OriginalChallenge: challenge,
 			},
-			wantErr: expectError("challenge is empty"),
+			wantErr: expectError("attest: challenge is empty"),
 		},
 		"error: challenge is empty on both sides": {
 			assertionObj: assertionObj,
@@ -390,7 +390,7 @@ func TestAssertionService_VerifyWithState(t *testing.T) {
 				PublicKey:         &key.PublicKey,
 				OriginalChallenge: "", // Caller forgot to set it
 			},
-			wantErr: expectError("challenge is empty"),
+			wantErr: expectError("attest: challenge is empty"),
 		},
 	}
 
@@ -458,29 +458,29 @@ func TestAssertionObject_UnmarshalCBOR(t *testing.T) {
 		},
 		"empty data": {
 			data:    []byte{},
-			wantErr: expectError("failed to read CBOR map header", io.ErrUnexpectedEOF),
+			wantErr: expectError("attest: failed to read CBOR map header", io.ErrUnexpectedEOF),
 		},
 		"not a map": {
 			data:    cborUint(1),
-			wantErr: expectError(fmt.Sprintf("expected CBOR type Map (major type 5) for AssertionObject, got major type %d", cbor.UnsignedInt)),
+			wantErr: expectError(fmt.Sprintf("attest: expected CBOR type Map (major type 5) for AssertionObject, got major type %d", cbor.UnsignedInt)),
 		},
 		"map key not text": {
 			data: cborMap(
 				item{cborUint(1), cborText("sig")},
 			),
-			wantErr: expectError(fmt.Sprintf("expected string map key at index %d, got major type %d", 0, cbor.UnsignedInt)),
+			wantErr: expectError(fmt.Sprintf("attest: expected string map key at index %d, got major type %d", 0, cbor.UnsignedInt)),
 		},
 		"signature wrong value type": {
 			data: cborMap(
 				item{cborText("signature"), cborUint(1)},
 			),
-			wantErr: expectError(fmt.Sprintf(`expected bytestring for signature (key "signature"), got major type %d`, cbor.UnsignedInt)),
+			wantErr: expectError(fmt.Sprintf(`attest: expected bytestring for signature (key "signature"), got major type %d`, cbor.UnsignedInt)),
 		},
 		"authenticatorData wrong value type": {
 			data: cborMap(
 				item{cborText("authenticatorData"), cborText("not-bytes")},
 			),
-			wantErr: expectError(fmt.Sprintf(`expected bytestring for authData (key "authenticatorData"), got major type %d`, cbor.TextString)),
+			wantErr: expectError(fmt.Sprintf(`attest: expected bytestring for authData (key "authenticatorData"), got major type %d`, cbor.TextString)),
 		},
 		"unknown key": {
 			data: cborMap(
@@ -506,31 +506,31 @@ func TestAssertionObject_UnmarshalCBOR(t *testing.T) {
 		},
 		"map size is truncated": {
 			data:    []byte{0xb8}, // map with a 1-byte length that is missing
-			wantErr: expectError("failed to read CBOR map size", io.ErrUnexpectedEOF),
+			wantErr: expectError("attest: failed to read CBOR map size", io.ErrUnexpectedEOF),
 		},
 		"map has no entries despite declared size": {
 			data:    []byte{0xa1}, // map(1) with no entries
-			wantErr: expectError("failed to read map key header at index 0", io.ErrUnexpectedEOF),
+			wantErr: expectError("attest: failed to read map key header at index 0", io.ErrUnexpectedEOF),
 		},
 		"map key string is truncated": {
 			data:    []byte{0xa1, 0x69, 's'}, // text(9) but only 1 byte
-			wantErr: expectError("failed to read map key string at index 0", io.ErrUnexpectedEOF),
+			wantErr: expectError("attest: failed to read map key string at index 0", io.ErrUnexpectedEOF),
 		},
 		"signature value is missing": {
 			data:    merge([]byte{0xa1}, cborText("signature")),
-			wantErr: expectError(`failed to read map value header (key "signature")`, io.ErrUnexpectedEOF),
+			wantErr: expectError(`attest: failed to read map value header (key "signature")`, io.ErrUnexpectedEOF),
 		},
 		"signature bytes are truncated": {
 			data:    merge([]byte{0xa1}, cborText("signature"), []byte{0x45, 'a'}), // bytes(5) but only 1 byte
-			wantErr: expectError("failed to read signature bytes", io.ErrUnexpectedEOF),
+			wantErr: expectError("attest: failed to read signature bytes", io.ErrUnexpectedEOF),
 		},
 		"authenticatorData value is missing": {
 			data:    merge([]byte{0xa1}, cborText("authenticatorData")),
-			wantErr: expectError(`failed to read map value header (key "authenticatorData")`, io.ErrUnexpectedEOF),
+			wantErr: expectError(`attest: failed to read map value header (key "authenticatorData")`, io.ErrUnexpectedEOF),
 		},
 		"authenticatorData bytes are truncated": {
 			data:    merge([]byte{0xa1}, cborText("authenticatorData"), []byte{0x45, 'a'}),
-			wantErr: expectError("failed to read authData bytes", io.ErrUnexpectedEOF),
+			wantErr: expectError("attest: failed to read authData bytes", io.ErrUnexpectedEOF),
 		},
 		"duplicate key: signature": {
 			data: cborMap(

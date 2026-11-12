@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	ErrInvalidSignature = errors.New("invalid the assertion signature")
-	ErrUnmatchRPIDHash  = errors.New("RP Hash mismatch")
+	ErrInvalidSignature = errors.New("attest: invalid the assertion signature")
+	ErrUnmatchRPIDHash  = errors.New("attest: RP Hash mismatch")
 )
 
 // cborAssertKey is a bit flag for a required CBOR map key of AssertionObject.
@@ -118,16 +118,16 @@ func (service *AssertionService) VerifyWithState(assertObject *AssertionObject, 
 func (service *AssertionService) verify(assertObject *AssertionObject, clientChallenge string, clientData []byte, state AssertionState) (*AssertionResult, error) {
 	// Input checks: reject unusable input before touching crypto.
 	if assertObject == nil {
-		return nil, errors.New("assertion object is nil")
+		return nil, errors.New("attest: assertion object is nil")
 	}
 	if clientChallenge == "" {
-		return nil, errors.New("challenge is empty")
+		return nil, errors.New("attest: challenge is empty")
 	}
 	if state.AppID == "" {
-		return nil, errors.New("assertion state: AppID is empty")
+		return nil, errors.New("attest: assertion state: AppID is empty")
 	}
 	if !isPublicKeyComplete(state.PublicKey) {
-		return nil, errors.New("assertion state: PublicKey is nil or incomplete")
+		return nil, errors.New("attest: assertion state: PublicKey is nil or incomplete")
 	}
 
 	// 1. Compute clientDataHash as the SHA256 hash of clientData.
@@ -152,7 +152,7 @@ func (service *AssertionService) verify(assertObject *AssertionObject, clientCha
 	// 4. Compute the SHA256 hash of the client’s App ID, and verify that it matches the RP ID in the authenticator data.
 	authData := AuthenticatorData{}
 	if err := authData.Unmarshal(assertObject.AuthData, false); err != nil {
-		return nil, fmt.Errorf("authenticator data decoding failed: %w", err)
+		return nil, fmt.Errorf("attest: authenticator data decoding failed: %w", err)
 	}
 	appIDHash := sha256.Sum256([]byte(state.AppID))
 	if !bytes.Equal(authData.RPIDHash[:], appIDHash[:]) {
@@ -161,12 +161,12 @@ func (service *AssertionService) verify(assertObject *AssertionObject, clientCha
 
 	// 5. Verify that the authenticator data’s counter value is greater than the value from the previous assertion, or greater than 0 on the first assertion.
 	if authData.Counter <= state.Counter {
-		return nil, fmt.Errorf("counter was not greater than previous [%d, previous: %d]", authData.Counter, state.Counter)
+		return nil, fmt.Errorf("attest: counter was not greater than previous [%d, previous: %d]", authData.Counter, state.Counter)
 	}
 
 	// 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
 	if clientChallenge != state.OriginalChallenge {
-		return nil, errors.New("invalid challenge")
+		return nil, errors.New("attest: invalid challenge")
 	}
 
 	return &AssertionResult{
@@ -185,26 +185,26 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 	dec := cbor.NewDecoder(data)
 	mt, ai, err := dec.ReadHeader()
 	if err != nil {
-		return fmt.Errorf("failed to read CBOR map header: %w", err)
+		return fmt.Errorf("attest: failed to read CBOR map header: %w", err)
 	}
 	if mt != cbor.Map {
-		return fmt.Errorf("expected CBOR type Map (major type 5) for AssertionObject, got major type %d", mt)
+		return fmt.Errorf("attest: expected CBOR type Map (major type 5) for AssertionObject, got major type %d", mt)
 	}
 	size, err := dec.ReadAdditional(ai)
 	if err != nil {
-		return fmt.Errorf("failed to read CBOR map size: %w", err)
+		return fmt.Errorf("attest: failed to read CBOR map size: %w", err)
 	}
 	for i := range size {
 		mt, ai, err = dec.ReadHeader()
 		if err != nil {
-			return fmt.Errorf("failed to read map key header at index %d: %w", i, err)
+			return fmt.Errorf("attest: failed to read map key header at index %d: %w", i, err)
 		}
 		if mt != cbor.TextString {
-			return fmt.Errorf("expected string map key at index %d, got major type %d", i, mt)
+			return fmt.Errorf("attest: expected string map key at index %d, got major type %d", i, mt)
 		}
 		key, err := dec.ReadUnsafeTextString(ai)
 		if err != nil {
-			return fmt.Errorf("failed to read map key string at index %d: %w", i, err)
+			return fmt.Errorf("attest: failed to read map key string at index %d: %w", i, err)
 		}
 		switch key {
 		case "signature":
@@ -214,14 +214,14 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 			gotKeys |= cborAssertSignature
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return fmt.Errorf(`failed to read map value header (key "signature") at index %d: %w`, i, err)
+				return fmt.Errorf(`attest: failed to read map value header (key "signature") at index %d: %w`, i, err)
 			}
 			if mt != cbor.ByteString {
-				return fmt.Errorf(`expected bytestring for signature (key "signature"), got major type %d`, mt)
+				return fmt.Errorf(`attest: expected bytestring for signature (key "signature"), got major type %d`, mt)
 			}
 			val, err := dec.ReadByteString(ai)
 			if err != nil {
-				return fmt.Errorf(`failed to read signature bytes (key "signature"): %w`, err)
+				return fmt.Errorf(`attest: failed to read signature bytes (key "signature"): %w`, err)
 			}
 			ao.Signature = val
 		case "authenticatorData":
@@ -231,14 +231,14 @@ func (ao *AssertionObject) UnmarshalCBOR(data []byte) error {
 			gotKeys |= cborAssertAuthData
 			mt, ai, err = dec.ReadHeader()
 			if err != nil {
-				return fmt.Errorf(`failed to read map value header (key "authenticatorData") at index %d: %w`, i, err)
+				return fmt.Errorf(`attest: failed to read map value header (key "authenticatorData") at index %d: %w`, i, err)
 			}
 			if mt != cbor.ByteString {
-				return fmt.Errorf(`expected bytestring for authData (key "authenticatorData"), got major type %d`, mt)
+				return fmt.Errorf(`attest: expected bytestring for authData (key "authenticatorData"), got major type %d`, mt)
 			}
 			val, err := dec.ReadByteString(ai)
 			if err != nil {
-				return fmt.Errorf(`failed to read authData bytes (key "authenticatorData"): %w`, err)
+				return fmt.Errorf(`attest: failed to read authData bytes (key "authenticatorData"): %w`, err)
 			}
 			ao.AuthData = val
 		default:
